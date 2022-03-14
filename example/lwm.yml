@@ -1,0 +1,213 @@
+---
+# TODO:
+### The timeout between key presses
+# timeout: 300
+
+### The amount of time a key can be held before `xcape` registers the alterate binding
+# xcape_timeout: 300
+
+#######################################################################
+#                               Global                                #
+#######################################################################
+
+### The shell to run the commands in
+# - Option<String>
+shell: zsh
+
+### The file to write the PID to
+# - Option<PathBuf>
+# pid_file: /var/run/lxhkd.pid
+
+### Whether contents should be written to a file
+# - bool
+log_to_file: true
+
+### The directory where the log file is kept
+# - Option<PathBuf>
+log_dir: ${XDG_CACHE_HOME}/lxhkd/log
+
+### The delay in which keys begin to repeat
+# - Option<u16>
+#autorepeat_delay: 300
+
+### The speed in which keys repeat after the delay
+# - Option<u16>
+# autorepeat_interval: 50
+
+#######################################################################
+#                             WM Specific                             #
+#######################################################################
+
+### Name of the desktops
+# - Vec<String>
+desktops: ["1", "2", "3", "4", "5"]
+
+### Absolute path to the command used to retrieve rule consequences
+# - Option<String>
+# external_rules_cmd:
+
+### Prefix prepended to each of the status lines
+# - String
+status_prefix: "W"
+
+### Color of the border of an unfocused window
+# - String
+normal_border_color: "#4C566A"
+
+### Color of the border of a focused window of an unfocused monitor
+# - String
+active_border_color: "#1E1E1E"
+
+### Color of the border of a focused window of a focused monitor
+# - String
+focused_border_color: "#A98698"
+
+### Color of the area when preselection takes place
+# - String
+presel_feedback_color: "#4C96A8"
+
+# TODO: Check how to serialize
+### Top, bottom, left, right padding of windows
+# - Padding
+padding:
+  - top: 0
+  - right: 0
+  - bottom: 0
+  - left: 0
+
+### Top, bottom, left, right padding of windows in monocle mode
+# - Padding
+monocle_padding:
+  - top: 0
+  - right: 0
+  - bottom: 0
+  - left: 0
+
+### Gap between active windows
+# - usize
+window_gap: 6
+
+### Size of the border around the window
+# - usize
+border_width: 1
+
+### Ratio of window splits
+# - f32
+split_ratio: 0.5
+
+### Window that child is attached to when adding in automatic mode
+# - Option<ChildPolarity>
+# initial_polarity: None
+
+### Insertion scheme used when the insertion point is in automatic mode
+# - AutomaticScheme
+automatic_scheme: longest_side
+
+### Adjust brother when unlinking node from tree in accordance with
+### automatic scheme
+# - bool
+removal_adjustment: true
+
+### Tightnesss of the algorithm used
+# - Option<Tightness>
+# directional_focus_tightness: None
+
+### Keyboard modifier used for moving or resizing windows
+# - ModMask
+pointer_modifier: mod4
+
+### Minimum interval between two motion notify events (milliseconds)
+# - u32
+pointer_motion_interval: 17
+
+### Action performed when pressing ModMask + Button
+# - Option<PointerActions>
+# pointer_actions:
+#   pointer_action1: resize_side
+#   pointer_action2: move
+#   pointer_action3: resize_corner
+
+### Handle next `mapping_events_count` mapping notify events
+### A negative value implies that every event needs to be handled
+# - i8
+mapping_events_count: 1
+
+### Draw the preselection feedback area
+# - bool
+presel_feedback: true
+
+### Remove borders of tiled windows (monocle desktop layout)
+# - bool
+borderless_monocle: false
+
+### Remove gaps of tiled windows (monocle desktop layout)
+# - bool
+gapless_monocle: false
+
+### Set desktop layout to monocle if there’s only one tiled window in tree
+# - bool
+single_monocle: false
+
+# XXX: Not in configuration
+# - bool
+borderless_singleton: false
+
+### Focus the window under the pointer
+# - bool
+focus_follows_pointer: false
+
+### When focusing a window, put the pointer at its center
+# - bool
+pointer_follows_focus: false
+
+### When focusing a monitor, put the pointer at its center
+# - bool
+pointer_follows_monitor: false
+
+### Button used for focusing a window (or a monitor)
+# - Button
+click_to_focus: button1
+
+### Don’t replay the click that makes a window focused if `click_to_focus`
+### isn’t none
+# - bool
+swallow_first_click: false
+
+### Ignore EWMH focus requests coming from applications
+# - bool
+ignore_ewmh_focus: false
+
+### Ignore strut hinting from clients requesting to reserve space
+# - bool
+ignore_ewmh_struts: false
+
+### Block the fullscreen state transitions that originate from an EWMH
+### request
+# - StateTransition
+ignore_ewmh_fullscreen: enter
+
+### Center pseudo tiled windows into their tiling rectangles
+# - bool
+center_pseudotiled: true
+
+### Apply ICCCM window size hints
+# - bool
+honor_size_hints: false
+
+### Consider disabled monitors as disconnected
+# - bool
+remove_disabled_monitors: false
+
+### Remove unplugged monitors
+# - bool
+remove_unplugged_monitors: false
+
+### Merge overlapping monitors (the bigger remains)
+# - bool
+merge_overlapping_monitors: false
+
+#######################################################################
+#                              Bindings                               #
+#######################################################################
+
+# bindings:
