@@ -8,25 +8,29 @@ use x11rb::protocol::xproto::{self, Button as XButton, Keycode as XKeycode, ModM
 // ============================== ModMask =============================
 // ====================================================================
 
+// TODO: Add support for all of these
+// super hyper meta alt control ctrl shift mode_switch lock mod1 mod2 mod3 mod4 mod5 any
+
 /// Keycode modifier that is held
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum ModMask {
     /// Left or right `shift` key
     Shift,
-    /// Num-lock, scroll-lock (maybe caps-lock?)
+    /// Num-lock, scroll-lock TODO: (maybe caps-lock?)
     Lock,
     /// Left or right `control` key
+    #[serde(alias = "ctrl")]
     Control,
-    /// Modifier 1 as defined by X11 or in `xmodmap` (usually `alt`)
+    /// Modifier 1 as defined in `xmodmap` (usually `alt`)
     Mod1,
-    /// Modifier 2 as defined by X11 or in `xmodmap` (usually `num-lock`)
+    /// Modifier 2 as defined in `xmodmap` (usually `num-lock`)
     Mod2,
-    /// Modifier 3 as defined by X11 or in `xmodmap` (usually blank)
+    /// Modifier 3 as defined in `xmodmap` (usually blank)
     Mod3,
-    /// Modifier 4 as defined by X11 or in `xmodmap` (usually `super`)
+    /// Modifier 4 as defined in `xmodmap` (usually `super`)
     Mod4,
-    /// Modifier 5 as defined by X11 or in `xmodmap`
+    /// Modifier 5 as defined or in `xmodmap` (usually `mode_shift`)
     Mod5,
     /// Catch all, used with the X11 interface
     #[serde(skip_deserializing)]

@@ -2,10 +2,22 @@
 
 use crate::types::Window;
 use std::collections::HashMap;
+use serde::{Serialize, Deserialize};
+
+/// The type of [`Window`] in the [`StackingList`]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(crate) enum StackLayer {
+    /// Window is `Below` another
+    Below,
+    /// Window is focused
+    Normal,
+    /// Window is `Above` another
+    Above,
+}
 
 /// The type of layer in the [`Stack`]
 #[derive(Debug)]
-pub(crate) enum StackLayer {
+pub(crate) enum StackLayer1 {
     /// A `Desktop` layer
     Desktop,
     /// A layer that is `Below` another
@@ -25,18 +37,18 @@ pub(crate) enum StackLayer {
 /// The window `Stack` manager
 #[derive(Debug)]
 pub(crate) struct StackManager {
-    /// All [`Window`]s mapped to their [`StackLayer`]
-    window_layers: HashMap<Window, StackLayer>,
+    /// All [`Window`]s mapped to their [`StackLayer1`]
+    window_layers: HashMap<Window, StackLayer1>,
 
-    /// Windows with a [`Desktop`](StackLayer::Desktop) layer
+    /// Windows with a [`Desktop`](StackLayer1::Desktop) layer
     desktop_windows:      Vec<Window>,
-    /// Windows with a [`Below`](StackLayer::Below) layer
+    /// Windows with a [`Below`](StackLayer1::Below) layer
     below_windows:        Vec<Window>,
-    /// Windows with an [`Above`](StackLayer::Above) layer
+    /// Windows with an [`Above`](StackLayer1::Above) layer
     above_windows:        Vec<Window>,
-    /// Windows with a [`Dock`](StackLayer::Dock) layer
+    /// Windows with a [`Dock`](StackLayer1::Dock) layer
     dock_windows:         Vec<Window>,
-    /// Windows with a [`Notification`](StackLayer::Notification) layer
+    /// Windows with a [`Notification`](StackLayer1::Notification) layer
     notification_windows: Vec<Window>,
 
     /// Windows to be stacked above others

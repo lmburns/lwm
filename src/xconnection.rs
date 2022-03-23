@@ -3,6 +3,7 @@
 use crate::{
     config::Config,
     error::Error,
+    geometry::Rectangle,
     lwm_fatal,
     types::{
         Atom,
@@ -22,10 +23,19 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use itertools::Itertools;
+use nix::poll::{poll, PollFd, PollFlags};
 use once_cell::sync::Lazy;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     collections::HashMap,
     convert::TryFrom,
+    fs,
+    io::{self, Read, Write},
+    net::Shutdown,
+    os::unix::{
+        io::AsRawFd,
+        net::{UnixListener, UnixStream},
+    },
     process,
     str::{self, FromStr},
     sync::Arc,
@@ -79,16 +89,17 @@ use x11rb::{
     wrapper::ConnectionExt as _,
 };
 
-use nix::unistd;
-
 // === Atoms === [[[
 
 /// An [`Atom`] is a unique ID corresponding to a string name that is used to
 /// identify properties, types, and selections. See the [Client Properties][1]
-/// and [Extended Properties][2] for more information.
+/// and [Extended Properties][2] for more information, as well as [Window
+/// Types][3], [Window Properties][4]
 ///
 /// [1]: https://specifications.freedesktop.org/wm-spec/wm-spec-latest.html#idm45381393900464
 /// [2]: https://tronche.com/gui/x/icccm/sec-4.html#s-4.1.2
+/// [3]: https://specifications.freedesktop.org/wm-spec/latest/ar01s05.html#idm139870830002400
+/// [4]: http://standards.freedesktop.org/wm-spec/latest/ar01s05.html#idm139870829988448
 atom_manager! {
     pub Atoms: AtomsCookie {
         Any,
@@ -103,9 +114,10 @@ atom_manager! {
         // UTF-8 encoded string data
         UTF8_STRING,
 
-        // ==== ICCCM client properties ====
+        // ============ ICCCM client properties ============ [[[
+        // Title or name of the window
         WM_NAME,
-        // Consecutive null-term strings; Instance and class
+        // Consecutive null-term strings; Instance and class names
         WM_CLASS,
         // ID of another top-level window. Pop-up on behalf of window
         WM_TRANSIENT_FOR,
@@ -113,22 +125,24 @@ atom_manager! {
         WM_CLIENT_MACHINE,
         // List of atoms identifying protocol between client and window
         WM_PROTOCOLS,
-        // Type is WM_SIZE_HINTS
+        // Indicate size, position, and perferences; Type is WM_SIZE_HINTS
         WM_NORMAL_HINTS,
         // Has atom if prompt of deletion or deletion is about to happen
         WM_DELETE_WINDOW,
         WM_WINDOW_ROLE,
         WM_CLIENT_LEADER,
         // Window may receieve a `ClientMessage` event
-        WM_TAKE_FOCUS,
+        WM_TAKE_FOCUS, // ]]]
 
-        // ==== ICCCM window manager properties ====
+        // ========== ICCCM window manager properties ====== [[[
         // Top-level windows not in withdrawn have this tag
         WM_STATE,
-        // If wishes to place constrains on sizes of icon pixmaps
-        WM_ICON_SIZE,
+        // If wishes to place constraints on sizes of icon pixmaps
+        WM_ICON_SIZE, // ]]]
 
-        // === EWMH root properties ===
+        // ============== EWMH root properties ============= [[[
+        // See: http://standards.freedesktop.org/wm-spec/latest/ar01s03.html
+        //
         // Indicates which hints are supported
         _NET_SUPPORTED,
         // Set on root window to be the ID of a child window to indicate WM is active
@@ -156,18 +170,19 @@ atom_manager! {
         _NET_VIRTUAL_ROOTS,
         _NET_DESKTOP_LAYOUT,
         // Set to 1 when windows are hidden and desktop is shown
-        _NET_SHOWING_DESKTOP,
+        _NET_SHOWING_DESKTOP, // ]]]
 
-        // === EWMH root messages ===
+        // ============== EWMH root messages =============== [[[
         // Wanting to close a window muse send this request
         _NET_CLOSE_WINDOW,
 
         // no
         _NET_MOVERESIZE_WINDOW,
         _NET_WM_MOVERESIZE,
-        _NET_REQUEST_FRAME_EXTENTS,
+        _NET_REQUEST_FRAME_EXTENTS, // ]]]
 
-        // === EWMH application properties ===
+        // ========== EWMH application properties ========== [[[
+        // See: http://standards.freedesktop.org/wm-spec/latest/ar01s05.html
         _NET_WM_STRUT_PARTIAL,
         _NET_WM_DESKTOP,
         _NET_WM_STATE,
@@ -205,9 +220,9 @@ atom_manager! {
         _NET_WM_STATE_SHADED,
         _NET_WM_STATE_SKIP_TASKBAR,
         _NET_WM_STATE_SKIP_PAGER,
-        _NET_WM_STATE_FOCUSED,
+        _NET_WM_STATE_FOCUSED, // ]]]
 
-        // === EWMH window types ===
+        // =============== EWMH window types =============== [[[
         _NET_WM_WINDOW_TYPE_DOCK,
         _NET_WM_WINDOW_TYPE_DESKTOP,
         _NET_WM_WINDOW_TYPE_NOTIFICATION,
@@ -223,23 +238,109 @@ atom_manager! {
         _NET_WM_WINDOW_TYPE_TOOLTIP,
         _NET_WM_WINDOW_TYPE_COMBO,
         _NET_WM_WINDOW_TYPE_DND,
-        _NET_WM_WINDOW_TYPE_NORMAL,
+        _NET_WM_WINDOW_TYPE_NORMAL, // ]]]
 
-        // EWMH protocols
+        // ================= EWMH protocols ================ [[[
         _NET_WM_PING,
         _NET_WM_SYNC_REQUEST,
-        _NET_WM_FULLSCREEN_MONITORS,
+        _NET_WM_FULLSCREEN_MONITORS, // ]]]
 
-        // System tray protocols
+        // ============= System tray protocols ============= [[[
         _NET_SYSTEM_TRAY_ORIENTATION,
         _NET_SYSTEM_TRAY_OPCODE,
         _NET_SYSTEM_TRAY_ORIENTATION_HORZ,
         _NET_SYSTEM_TRAY_S0,
         _XEMBED,
-        _XEMBED_INFO,
+        _XEMBED_INFO, // ]]]
     }
 }
 // ]]] === Atoms ===
+
+// ============================== Stream ============================== [[[
+
+/// A connection to a Unix stream socket
+pub(crate) struct Stream {
+    /// The stream socket
+    stream:  UnixStream,
+    /// Length of the data received from the stream
+    length:  usize,
+    /// Is the stream being read from?
+    reading: bool,
+    /// Data that is transferred across the socket
+    data:    Vec<u8>,
+} // ]]] === Stream ===
+
+impl Stream {
+    /// Create a new [`Stream`]
+    pub(crate) const fn new(stream: UnixStream) -> Self {
+        Self {
+            stream,
+            length: 0,
+            reading: false,
+            data: Vec::new(),
+        }
+    }
+
+    /// Send data across the stream
+    pub(crate) fn send<T: Serialize>(&mut self, item: &T) -> Result<bool> {
+        let data = bincode::serialize(item).context("failed to serialize data")?;
+        match self
+            .stream
+            .write_all(
+                bincode::serialize(&(data.len() as u32))
+                    .context("failed to serialize data length")?
+                    .as_slice(),
+            )
+            .and(self.stream.write_all(data.as_slice()))
+        {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                log::info!("{:?}", e);
+                Ok(false)
+            },
+        }
+    }
+
+    /// Extend the read data, indicating whether more should be read
+    pub(crate) fn get_bytes(&mut self) -> bool {
+        let mut bytes = [0_u8; 256];
+        match self.stream.read(&mut bytes) {
+            Ok(0) => true,
+            Ok(len) => {
+                self.data.extend(&bytes[..len]);
+                false
+            },
+            Err(e) => {
+                log::info!("{:?}", e);
+                e.kind() != io::ErrorKind::WouldBlock
+            },
+        }
+    }
+
+    /// Receive data from the stream
+    pub(crate) fn recieve<T: DeserializeOwned>(&mut self) -> (bool, Option<T>) {
+        let done = self.get_bytes();
+        if !self.reading && self.data.len() >= 4 {
+            self.length = bincode::deserialize::<u32>(self.data.drain(..4).as_ref())
+                .expect("failed to deserialize data") as usize;
+            self.reading = true;
+        }
+        if self.reading && self.data.len() >= self.length {
+            self.reading = false;
+            (
+                done,
+                Some(
+                    bincode::deserialize(self.data.drain(..self.length).as_ref())
+                        .expect("failed to deserialize data"),
+                ),
+            )
+        } else {
+            (done, None)
+        }
+    }
+}
+
+// ============================ XConnection =========================== [[[
 
 // black_gc: Gcontext,
 // windows: Vec<WindowState>,
@@ -249,9 +350,13 @@ atom_manager! {
 // sequences_to_ignore: BinaryHeap<Reverse<u16>>,
 // drag_window: Option<(Window, (i16, i16))>,
 
+pub(crate) struct Aux {
+    /// The X11 connection
+    dpy: Arc<RustConnection>
+}
+
 /// The main connection to the X-Server
-#[derive(Clone)]
-pub(crate) struct LWM {
+pub(crate) struct XConnection {
     /// The actual [`Connection`](RustConnection)
     conn:        Arc<RustConnection>,
     /// The [`Atoms`] of the connection
@@ -264,23 +369,43 @@ pub(crate) struct LWM {
     win_states:  HashMap<Atom, WindowState>,
     /// Screen number the connection is attached to
     screen:      usize,
-    /// State of the window manager
-    restart:     bool,
     /// Background graphics context
     gctx:        xproto::Gcontext,
-    //-
-    // // Information about the current [`Screen`](xproto::Screen)
-    // screen:       xproto::Screen,
-    // // The X11 resource database (`xrdb`)
-    // database:      Option<Database>,
-    // // A confined X11 [`Connection`](xproto::Connection) ??
-    // confined_to:   Option<Window>
+
+    /// Connection to a Unix socket
+    listener: UnixListener,
+    /// TODO:
+    streams:  Vec<Stream>,
+    /// TODO:
+    poll_fds: Vec<PollFd>,
+    /// Name of the socket
+    socket:   String,
 }
 
-impl LWM {
-    /// Create a new [`LWM`]
+// /// Information about the current [`Screen`](xproto::Screen)
+// screen:       xproto::Screen,
+// /// The X11 resource database (`xrdb`)
+// database:      Option<Database>,
+// /// A confined X11 [`Connection`](xproto::Connection) ??
+// confined_to:   Option<Window>
+
+impl XConnection {
+    /// Create a new [`XConnection`]
     pub(crate) fn new(conn: RustConnection, screen_num: usize, config: &Config) -> Result<Self> {
         Self::check_extensions(&conn).context("failed to query extensions")?;
+
+        let socket = format!("/tmp/lwm-{}.sock", whoami::username());
+        fs::remove_file(&socket);
+        let listener = UnixListener::bind(&socket).context("failed to bind socket listener")?;
+        listener
+            .set_nonblocking(true)
+            .context("failed to set non-blocking on `UnixListener`")?;
+
+        let poll_fds = vec![
+            PollFd::new(conn.stream().as_raw_fd(), PollFlags::POLLIN),
+            PollFd::new(listener.as_raw_fd(), PollFlags::POLLIN),
+        ];
+
         let setup = conn.setup();
         let screen = setup.roots[screen_num].clone();
         let root = screen.root;
@@ -312,10 +437,13 @@ impl LWM {
             atoms,
             screen: screen_num,
             meta_window,
-            restart: false,
             win_types: WindowType::to_hashmap(&atoms),
             win_states: WindowState::to_hashmap(&atoms),
             gctx,
+            listener,
+            streams: vec![],
+            poll_fds,
+            socket,
         };
 
         // xconn.init(config)?;
@@ -1634,6 +1762,33 @@ impl LWM {
             .ok_or_else(|| Error::InvalidProperty(String::from("_NET_WM_PID")))?)
     }
 
+    /// Get the [`Window`]'s geometry, returning a [`Rectangle`]
+    pub(crate) fn get_window_geometry(&self, window: Window) -> Result<Rectangle> {
+        let geom = self.get_geometry(window)?;
+
+        let trans = self
+            .conn
+            .translate_coordinates(window, self.root(), geom.x, geom.y)
+            .context(format!(
+                "failed to get `TranslateCoordinatesReply` of window: {}",
+                window
+            ))?
+            .reply()
+            .context("failed to get `TranslateCoordinatesReply` reply")?;
+
+        let (x, y, w, h) = (trans.dst_x, trans.dst_y, geom.width, geom.height);
+        log::debug!(
+            "Window({}): Geomtry: x: {}, y: {}, w: {}, h: {}",
+            window,
+            x,
+            y,
+            w,
+            h
+        );
+
+        Ok(Rectangle::new(x as i32, y as i32, w as u32, h as u32))
+    }
+
     // ]]] === Retrieve ===
 
     // =========================== Set ============================ [[[
@@ -1700,6 +1855,24 @@ impl LWM {
     fn print_data_type(reply: &GetPropertyReply) {
         println!("Reply: {:#?}", reply);
         println!("DataType: {:#?}", AtomEnum::from(reply.type_ as u8));
+    }
+} // ]]] === XConnection ===
+
+impl Drop for XConnection {
+    fn drop(&mut self) {
+        fs::remove_file(&self.socket);
+    }
+}
+
+impl Drop for Stream {
+    fn drop(&mut self) {
+        self.stream.shutdown(Shutdown::Both);
+    }
+}
+
+impl AsRawFd for Stream {
+    fn as_raw_fd(&self) -> i32 {
+        self.stream.as_raw_fd()
     }
 }
 

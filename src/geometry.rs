@@ -1,21 +1,62 @@
 //! Structures used to map areas on the screen
 
 use crate::types::{Corner, Direction, Tightness};
-use std::ops::{Add, Div, Mul, Sub};
+use serde::{Deserialize, Serialize};
+use std::ops::{Add, AddAssign, Div, Mul, Sub, SubAssign};
 use tern::t;
-// use x11rb::protocol::xproto::{self, Point as XPoint, Rectangle as XRectangle};
+use x11rb::protocol::xproto::ConfigureWindowAux;
+// use x11rb::protocol::xproto::{self, Point as XPoint, Rectangle as
+// XRectangle};
+
+// ============================== Padding =============================
+// ====================================================================
+
+/// Padding around a window
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Padding {
+    /// Padding on the top
+    pub(crate) top:    u32,
+    /// Padding on the right
+    pub(crate) right:  u32,
+    /// Padding on the bottom
+    pub(crate) bottom: u32,
+    /// Padding on the left
+    pub(crate) left:   u32,
+}
+
+impl Padding {
+    /// Create a new [`Padding`]
+    pub(crate) const fn new(top: u32, right: u32, bottom: u32, left: u32) -> Self {
+        Self { top, right, bottom, left }
+    }
+}
+
+/// Type alias for [`Padding`]
+pub(crate) type Extents = Padding;
+
+impl Extents {
+    /// No [`Extents`]
+    pub(crate) const EMPTY: Self = Self {
+        left:   0,
+        right:  0,
+        top:    0,
+        bottom: 0,
+    };
+}
 
 // =============================== Point ==============================
 // ====================================================================
 
 /// Wrapper for [`Point`](xproto::Point). When this is used with a
 /// [`Rectangle`], it represents the top-left [`Corner`]
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 pub(crate) struct Point {
     /// X-coordinate
-    x: i32,
+    pub(crate) x: i32,
     /// Y-coordinate
-    y: i32,
+    pub(crate) y: i32,
 }
 
 impl Point {
@@ -76,12 +117,12 @@ impl Point {
 // ====================================================================
 
 /// An a `width` and a `height`. An `area` of a [`Rectangle`]`
-#[derive(Debug, Copy, Clone, PartialOrd, Ord, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialOrd, Ord, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) struct Dimension {
     /// The width of the [`Rectangle`]
-    width:  u32,
+    pub(crate) width:  u32,
     /// The height of the [`Rectangle`]
-    height: u32,
+    pub(crate) height: u32,
 }
 
 impl Default for Dimension {
@@ -128,6 +169,17 @@ impl Dimension {
     }
 }
 
+impl Add<Self> for Point {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self::Output {
+        Self::Output {
+            x: self.x + other.x,
+            y: self.y + other.y,
+        }
+    }
+}
+
 impl Add<Dimension> for Point {
     type Output = Self;
 
@@ -165,12 +217,14 @@ impl Sub for Point {
 // ====================================================================
 
 /// Equivalent to `xcb_rectangle_t`
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 pub(crate) struct Rectangle {
     /// Represents the top-left corner of the rectangle
-    point:     Point,
+    pub(crate) point:     Point,
     /// The width and height of the rectangle
-    dimension: Dimension,
+    pub(crate) dimension: Dimension,
 }
 
 impl Rectangle {
@@ -379,5 +433,119 @@ impl Rectangle {
         } else {
             (rect.area() - self.area()) as i32
         }
+    }
+
+    /// Create a [`ConfigureWindowAux`] from a [`Rectangle`]
+    pub(crate) fn aux(&self, width: u32) -> ConfigureWindowAux {
+        ConfigureWindowAux::new()
+            .x(self.point.x)
+            .y(self.point.y)
+            .width(self.dimension.width - width * 2)
+            .height(self.dimension.height - width * 2)
+            .border_width(width)
+    }
+}
+
+impl Add<Padding> for Rectangle {
+    type Output = Self;
+
+    fn add(self, padding: Padding) -> Self::Output {
+        Self::Output {
+            point:     Point {
+                x: self.point.x - padding.left as i32,
+                y: self.point.y - padding.top as i32,
+            },
+            dimension: Dimension {
+                width:  self.dimension.width + padding.left + padding.right,
+                height: self.dimension.height + padding.top + padding.bottom,
+            },
+        }
+    }
+}
+
+impl Sub<Padding> for Rectangle {
+    type Output = Self;
+
+    fn sub(self, padding: Padding) -> Self::Output {
+        Self::Output {
+            point:     Point {
+                x: self.point.x + padding.left as i32,
+                y: self.point.y + padding.top as i32,
+            },
+            dimension: Dimension {
+                width:  self.dimension.width - padding.left - padding.right,
+                height: self.dimension.height - padding.top - padding.bottom,
+            },
+        }
+    }
+}
+
+impl AddAssign<Padding> for Rectangle {
+    fn add_assign(&mut self, padding: Padding) {
+        *self = Self {
+            point:     Point {
+                x: self.point.x - padding.left as i32,
+                y: self.point.y - padding.top as i32,
+            },
+            dimension: Dimension {
+                width:  self.dimension.width + padding.left + padding.right,
+                height: self.dimension.height + padding.top + padding.bottom,
+            },
+        };
+    }
+}
+
+impl SubAssign<Padding> for Rectangle {
+    fn sub_assign(&mut self, padding: Padding) {
+        *self = Self {
+            point:     Point {
+                x: self.point.x + padding.left as i32,
+                y: self.point.y + padding.top as i32,
+            },
+            dimension: Dimension {
+                width:  self.dimension.width - padding.left - padding.right,
+                height: self.dimension.height - padding.top - padding.bottom,
+            },
+        };
+    }
+}
+
+impl Add<Padding> for Dimension {
+    type Output = Self;
+
+    fn add(self, padding: Padding) -> Self::Output {
+        Self::Output {
+            width:  self.width + padding.left + padding.right,
+            height: self.height + padding.top + padding.bottom,
+        }
+    }
+}
+
+impl Sub<Padding> for Dimension {
+    type Output = Self;
+
+    fn sub(self, padding: Padding) -> Self::Output {
+        Self::Output {
+            width:  self.width - padding.left - padding.right,
+            height: self.height - padding.top - padding.bottom,
+        }
+    }
+}
+
+impl AddAssign<Padding> for Dimension {
+    fn add_assign(&mut self, padding: Padding) {
+        *self = Self {
+            width:  self.width + padding.left + padding.right,
+            height: self.height + padding.top + padding.bottom,
+        };
+    }
+}
+
+impl SubAssign<Padding> for Dimension {
+    fn sub_assign(&mut self, padding: Padding) {
+        *self = Self {
+            width:  self.width - padding.left - padding.right,
+            height: self.height - padding.top - padding.bottom,
+        };
     }
 }

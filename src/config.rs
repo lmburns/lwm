@@ -1,8 +1,9 @@
 //! Configuration options
 
 use crate::{
+    geometry::Padding,
     input::{Button, ModMask},
-    types::{AutomaticScheme, ChildPolarity, Padding, PointerAction, StateTransition, Tightness},
+    types::{AutomaticScheme, ChildPolarity, PointerAction, StateTransition, Tightness},
     utils::{deserialize_absolute_path, deserialize_shellexpand},
 };
 use anyhow::{Context, Result};
@@ -43,7 +44,8 @@ pub(crate) static SHELL: Lazy<PathBuf> = Lazy::new(|| {
 });
 
 // pub(crate) static SHELL: Lazy<String> =
-//     Lazy::new(|| env::var("SHELL").unwrap_or_else(|_| String::from("/bin/bash")));
+//     Lazy::new(|| env::var("SHELL").unwrap_or_else(|_|
+// String::from("/bin/bash")));
 
 // =============== GlobalSettings ================= [[[
 
@@ -138,7 +140,7 @@ pub(crate) struct GlobalSettings {
 
     /// [`Tightnesss`] of the algorithm used
     #[serde(alias = "directional-focus-tightness")]
-    pub(crate) directional_focus_tightness: Option<Tightness>,
+    pub(crate) directional_focus_tightness: Tightness,
 
     /// Keyboard modifier used for moving or resizing windows
     #[serde(alias = "pointer-modifier")]
@@ -250,6 +252,17 @@ pub(crate) struct PointerActions {
     pub(crate) pointer_action3: Option<PointerAction>,
 } // ]]] === Pointer Actions ===
 
+impl PointerActions {
+    /// Create a new [`PointerActions`]
+    pub(crate) const fn new(a1: PointerAction, a2: PointerAction, a3: PointerAction) -> Self {
+        Self {
+            pointer_action1: Some(a1),
+            pointer_action2: Some(a2),
+            pointer_action3: Some(a3),
+        }
+    }
+}
+
 // =================== Config ===================== [[[
 
 /// Configuration file to parse.
@@ -271,12 +284,12 @@ impl Config {
         let path = path.as_ref();
 
         if !path.exists() {
-            log::debug!("creating configuration path: {}", path.display());
+            log::debug!("Creating configuration path: {}", path.display());
             fs::create_dir_all(path).context("unable to create configuration directory")?;
         }
 
         let path = path.join(CONFIG_FILE);
-        println!("CONFIG: path: {:#?}", path);
+        log::debug!("{}: {}", "Configuration path".bright_blue(), path.display());
 
         if !path.is_file() {
             let initialization = include_str!("../example/lwm.yml");
@@ -296,6 +309,8 @@ impl Config {
         Self::load(path)
     }
 
+    // NOTE: SerdeError doesn't always point out correct error
+
     /// Load the configuration file from a given path
     pub(crate) fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
@@ -304,7 +319,9 @@ impl Config {
         // serde_yaml::from_slice(&file).context("failed to deserialize config file")
 
         let file = fs::read_to_string(&path).context("failed to read config file")?;
-        Ok(serde_yaml::from_str(&file).map_err(|e| SerdeError::new(file, e))?)
+        let res = serde_yaml::from_str(&file).map_err(|e| SerdeError::new(file, e))?;
+
+        Ok(res)
     }
 
     /// Load the default configuration file
@@ -446,52 +463,63 @@ pub(crate) fn get_project_dirs() -> ProjectDirs {
 impl Default for GlobalSettings {
     fn default() -> Self {
         Self {
-            shell: Some(SHELL.to_path_buf()),
-            pid_file: None,
-            log_to_file: true,
-            log_dir: None,
-            autorepeat_delay: None,
+            shell:               Some(SHELL.to_path_buf()),
+            pid_file:            None,
+            log_to_file:         true,
+            log_dir:             None,
+            autorepeat_delay:    None,
             autorepeat_interval: None,
-            desktops: vec!["1", "2", "3", "4", "5"]
+
+            desktops:              vec!["1", "2", "3", "4", "5"]
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>(),
-            external_rules_cmd: None,
-            status_prefix: String::from("W"),
-            normal_border_color: String::from("#4C566A"),
-            active_border_color: String::from("#1E1E1E"),
-            focused_border_color: String::from("#A98698"),
+            external_rules_cmd:    None,
+            status_prefix:         String::from("W"),
+            normal_border_color:   String::from("#4C566A"),
+            active_border_color:   String::from("#1E1E1E"),
+            focused_border_color:  String::from("#A98698"),
             presel_feedback_color: String::from("#4C96A8"),
-            padding: Padding::new(0, 0, 0, 0),
-            monocle_padding: Padding::new(0, 0, 0, 0),
-            window_gap: 6_usize,
-            border_width: 1_usize,
-            split_ratio: 0.5_f32,
-            initial_polarity: None,
-            automatic_scheme: AutomaticScheme::LongestSide,
-            removal_adjustment: true,
-            directional_focus_tightness: None,
-            pointer_modifier: ModMask::Mod4,
+
+            padding:                     Padding::new(0, 0, 0, 0),
+            monocle_padding:             Padding::new(0, 0, 0, 0),
+            window_gap:                  6_usize,
+            border_width:                1_usize,
+            split_ratio:                 0.5_f32,
+            initial_polarity:            None,
+            automatic_scheme:            AutomaticScheme::LongestSide,
+            removal_adjustment:          true,
+            directional_focus_tightness: Tightness::High,
+
+            pointer_modifier:        ModMask::Mod4,
             pointer_motion_interval: 17_u32,
-            pointer_actions: None,
-            mapping_events_count: 1_i8,
-            presel_feedback: true,
-            borderless_monocle: false,
-            gapless_monocle: false,
-            single_monocle: false,
+            pointer_actions:         Some(PointerActions::new(
+                PointerAction::Move,
+                PointerAction::ResizeSide,
+                PointerAction::ResizeCorner,
+            )),
+            mapping_events_count:    1_i8,
+
+            presel_feedback:      true,
+            borderless_monocle:   false,
+            gapless_monocle:      false,
+            single_monocle:       false,
             borderless_singleton: false,
-            focus_follows_pointer: false,
-            pointer_follows_focus: false,
+
+            focus_follows_pointer:   false,
+            pointer_follows_focus:   false,
             pointer_follows_monitor: false,
-            click_to_focus: Button::Left,
-            swallow_first_click: false,
-            ignore_ewmh_focus: false,
-            ignore_ewmh_struts: false,
-            ignore_ewmh_fullscreen: StateTransition::Enter,
+            click_to_focus:          Button::Left,
+            swallow_first_click:     false,
+            ignore_ewmh_focus:       false,
+            ignore_ewmh_struts:      false,
+            ignore_ewmh_fullscreen:  StateTransition::Enter,
+
             center_pseudotiled: true,
-            honor_size_hints: false,
-            remove_disabled_monitors: false,
-            remove_unplugged_monitors: false,
+            honor_size_hints:   false,
+
+            remove_disabled_monitors:   false,
+            remove_unplugged_monitors:  false,
             merge_overlapping_monitors: false,
         }
     }

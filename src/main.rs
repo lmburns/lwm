@@ -1,4 +1,7 @@
 //! An X11 Window Manager that is basically a Rust clone of `bspwm`
+
+// monitor -> desktop -> node -> client
+
 #![allow(unused)]
 #![deny(
     clippy::all,
@@ -99,6 +102,7 @@
     // Remove later
     clippy::print_stdout,
     clippy::use_debug,
+    clippy::todo,
 
     // clippy::single_match_else,
 )]
@@ -122,18 +126,25 @@
 )]
 
 mod cli;
+mod client;
 mod config;
+mod cycle;
 mod error;
 mod events;
 mod geometry;
 mod input;
 mod macros;
-mod monitor;
+mod messages;
+mod pointer;
+mod query;
+mod rule;
 mod stack;
+mod subscribe;
+mod tree;
 mod types;
 mod utils;
-mod xcb_utils;
 mod xconnection;
+mod xutils;
 
 use std::{
     cmp::Reverse,
@@ -143,6 +154,7 @@ use std::{
 };
 
 use anyhow::Result;
+use colored::Colorize;
 use config::Config;
 
 use x11rb::{
@@ -154,15 +166,21 @@ use x11rb::{
     CURRENT_TIME,
 };
 
-use xcb_utils::XUtility;
-use xconnection::LWM;
+use xconnection::XConnection;
+use xutils::XUtility;
+
+use crate::tree::Presel;
 
 fn main() -> Result<()> {
     // let (conn, screen_num) = XUtility::setup_connection()?;
     let config = Config::load_default()?;
     // let xconn = LWM::new(conn, screen_num, &config)?;
 
-    println!("CONFIG: {:#?}", config);
+    log::debug!("{}: {:#?}", "Configuration options".bright_blue(), config);
+
+    let presel = Presel::new(0.5);
+    let s = serde_json::to_string(&presel)?;
+    println!("{}", s);
 
     Ok(())
 }

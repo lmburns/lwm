@@ -12,23 +12,23 @@
 
 ### The shell to run the commands in
 # - Option<String>
-shell: zsh
+shell: "zsh"
 
 ### The file to write the PID to
 # - Option<PathBuf>
 # pid_file: /var/run/lxhkd.pid
 
 ### Whether contents should be written to a file
-# - bool
-log_to_file: true
+# - bool: true, false
+log_to_file: false
 
 ### The directory where the log file is kept
 # - Option<PathBuf>
-log_dir: ${XDG_CACHE_HOME}/lxhkd/log
+log_dir: ${XDG_CACHE_HOME}/lwm/log
 
 ### The delay in which keys begin to repeat
 # - Option<u16>
-#autorepeat_delay: 300
+# autorepeat_delay: 300
 
 ### The speed in which keys repeat after the delay
 # - Option<u16>
@@ -41,7 +41,7 @@ log_dir: ${XDG_CACHE_HOME}/lxhkd/log
 ### Name of the desktops
 # - Vec<String>
 desktops: ["1", "2", "3", "4", "5"]
-
+#
 ### Absolute path to the command used to retrieve rule consequences
 # - Option<String>
 # external_rules_cmd:
@@ -70,18 +70,18 @@ presel_feedback_color: "#4C96A8"
 ### Top, bottom, left, right padding of windows
 # - Padding
 padding:
-  - top: 0
-  - right: 0
-  - bottom: 0
-  - left: 0
+  top: 0
+  right: 0
+  bottom: 0
+  left: 0
 
 ### Top, bottom, left, right padding of windows in monocle mode
 # - Padding
 monocle_padding:
-  - top: 0
-  - right: 0
-  - bottom: 0
-  - left: 0
+  top: 0
+  right: 0
+  bottom: 0
+  left: 0
 
 ### Gap between active windows
 # - usize
@@ -97,23 +97,39 @@ split_ratio: 0.5
 
 ### Window that child is attached to when adding in automatic mode
 # - Option<ChildPolarity>
+#   - first: First child
+#   - second: Second child
 # initial_polarity: None
 
 ### Insertion scheme used when the insertion point is in automatic mode
 # - AutomaticScheme
+#   - longest-side: TODO:
+#   - alternate: TODO:
+#   - spiral: TODO:
 automatic_scheme: longest_side
 
 ### Adjust brother when unlinking node from tree in accordance with
 ### automatic scheme
-# - bool
+# - bool: true, false
 removal_adjustment: true
 
-### Tightnesss of the algorithm used
+### Tightness of algorithm used to decide whether a window is on the
+### `direction` side of another window
 # - Option<Tightness>
+#   - low: A low tightness of the algorithm
+#   - high: A high tightness of the algorithm
 # directional_focus_tightness: None
 
 ### Keyboard modifier used for moving or resizing windows
 # - ModMask
+#   - shift: Left or right shift key
+#   - lock: TODO:
+#   - control: Left or right control key
+#   - mod1: Modifier 1 key (usually Alt)
+#   - mod2: Modifier 2 key (usually Num-Lock)
+#   - mod3: Modifier 3 key (usually blank)
+#   - mod4: Modifier 4 key (usually Super)
+#   - mod5: Modifier 5 key (usually Mode_Shift)
 pointer_modifier: mod4
 
 ### Minimum interval between two motion notify events (milliseconds)
@@ -122,6 +138,11 @@ pointer_motion_interval: 17
 
 ### Action performed when pressing ModMask + Button
 # - Option<PointerActions>
+#   - none: No action is performed
+#   - focus: Window becomes focused
+#   - move: Window is moved
+#   - resize-side: Side of window is used to resize
+#   - resize-corner: Corner of window is used to resize
 # pointer_actions:
 #   pointer_action1: resize_side
 #   pointer_action2: move
@@ -133,77 +154,85 @@ pointer_motion_interval: 17
 mapping_events_count: 1
 
 ### Draw the preselection feedback area
-# - bool
+# - bool: true, false
 presel_feedback: true
 
 ### Remove borders of tiled windows (monocle desktop layout)
-# - bool
+# - bool: true, false
 borderless_monocle: false
 
 ### Remove gaps of tiled windows (monocle desktop layout)
-# - bool
+# - bool: true, false
 gapless_monocle: false
 
 ### Set desktop layout to monocle if there’s only one tiled window in tree
-# - bool
+# - bool: true, false
 single_monocle: false
 
 # XXX: Not in configuration
-# - bool
+# - bool: true, false
 borderless_singleton: false
 
 ### Focus the window under the pointer
-# - bool
+# - bool: true, false
 focus_follows_pointer: false
 
 ### When focusing a window, put the pointer at its center
-# - bool
+# - bool: true, false
 pointer_follows_focus: false
 
 ### When focusing a monitor, put the pointer at its center
-# - bool
+# - bool: true, false
 pointer_follows_monitor: false
 
 ### Button used for focusing a window (or a monitor)
-# - Button
+# - Button:
+#   - button1 / mouse1 (Left-click)
+#   - button2 / mouse2 (Middle-click)
+#   - button3 / mouse3 (Right-click)
+#   - scroll-up        (Mouse-wheel scroll up)
+#   - scroll-down      (Mouse-wheel scroll down)
 click_to_focus: button1
 
 ### Don’t replay the click that makes a window focused if `click_to_focus`
 ### isn’t none
-# - bool
+# - bool: true, false
 swallow_first_click: false
 
 ### Ignore EWMH focus requests coming from applications
-# - bool
+# - bool: true, false
 ignore_ewmh_focus: false
 
 ### Ignore strut hinting from clients requesting to reserve space
-# - bool
+# - bool: true, false
 ignore_ewmh_struts: false
 
+# TODO: Describe
 ### Block the fullscreen state transitions that originate from an EWMH
 ### request
 # - StateTransition
+#   - enter
+#   - exit
 ignore_ewmh_fullscreen: enter
 
 ### Center pseudo tiled windows into their tiling rectangles
-# - bool
+# - bool: true, false
 center_pseudotiled: true
 
 ### Apply ICCCM window size hints
-# - bool
+# - bool: true, false
 honor_size_hints: false
 
 ### Consider disabled monitors as disconnected
-# - bool
+# - bool: true, false
 remove_disabled_monitors: false
 
 ### Remove unplugged monitors
-# - bool
+# - bool: true, false
 remove_unplugged_monitors: false
 
 ### Merge overlapping monitors (the bigger remains)
-# - bool
+# - bool: true, false
 merge_overlapping_monitors: false
 
 #######################################################################

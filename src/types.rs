@@ -2,10 +2,16 @@
 
 #![allow(clippy::missing_docs_in_private_items)]
 
-use crate::{geometry::Rectangle, input::ModMask, xconnection::Atoms};
+use crate::{
+    geometry::{Dimension, Point, Rectangle},
+    input::ModMask,
+    tree::Node,
+    xconnection::Atoms,
+};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::{
+    cmp,
     collections::HashMap,
     fmt,
     ops::{Add, Div, Mul, Sub},
@@ -25,6 +31,19 @@ pub(crate) use x11rb::protocol::{
 pub(crate) type Pid = u32;
 /// Type alias used for syntax compatibility
 pub(crate) type Xid = u32;
+/// Type alias for a given index
+pub(crate) type Idx = usize;
+
+/// Trait to return the [`Window`]'s ID
+pub(crate) trait Identify: PartialEq {
+    fn id(&self) -> Xid;
+}
+
+impl Identify for Window {
+    fn id(&self) -> Xid {
+        *self
+    }
+}
 
 /// Default string for missing values
 pub(crate) const MISSING_VALUE: &str = "N/A";
@@ -211,7 +230,7 @@ impl fmt::Display for WindowType {
 /// More information can be found in the [X11 documentation][1]
 ///
 /// [1]: https://specifications.freedesktop.org/wm-spec/wm-spec-latest.html#idm45381392044896
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) enum WindowState {
     /// Window is on-top of or above another
     Above,
@@ -410,7 +429,8 @@ impl From<IcccmWindowState> for u32 {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// ICCCM window properties
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) struct IcccmProps {
     /// Request to take focus of the window
     take_focus:    bool,
@@ -421,21 +441,6 @@ pub(crate) struct IcccmProps {
 
 // ============================== Unused ==============================
 // ====================================================================
-
-/// The type of [`Window`] split
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum SplitType {
-    /// Window is split with the axis of the split going from East to West
-    Horizontal,
-    /// Window is split with the axis of the split going from North to South
-    Vertical,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum SplitMode {
-    Automatic,
-    Manual,
-}
 
 /// Insertion scheme used when the insertion point is in automatic mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -448,40 +453,18 @@ pub(crate) enum AutomaticScheme {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum ClientState {
-    Tiled,
-    PsuedoTiled,
-    Floating,
-    Fullscreen,
-}
-
-/// The type of [`Window`] in the [`StackingList`]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum StackLayer {
-    /// Window is `Below` another
-    Below,
-    /// Window is focused
-    Normal,
-    /// Window is `Above` another
-    Above,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum AlterState {
     Toggle,
     Set,
 }
 
+/// Window cycle direction
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum CycleDir {
+    /// Cycle to the next item
     Next,
+    /// Cycle to the previous item
     Prev,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum CirculateDir {
-    Forward,
-    Backward,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -491,7 +474,7 @@ pub(crate) enum HistoryDir {
 }
 
 /// A standard direction
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) enum Direction {
     /// North or above relative to something else
     North,
@@ -503,15 +486,24 @@ pub(crate) enum Direction {
     West,
 }
 
+/// Part of the [`Window`] that is being moved to cause a resize
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ResizeHandle {
+    /// Moving left side of window
     Left,
+    /// Moving top side of window
     Top,
+    /// Moving right side of window
     Right,
+    /// Moving bottom side of window
     Bottom,
+    /// Corner resize of top-left corner
     TopLeft,
+    /// Corner resize of top-right corner
     TopRight,
+    /// Corner resize of bottom-right corner
     BottomRight,
+    /// Corner resize of bottom-left corner
     BottomLeft,
 }
 
@@ -533,8 +525,9 @@ pub(crate) enum PointerAction {
     ResizeCorner,
 }
 
+/// The layout of the current [`Window`]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum Layout {
+pub(crate) enum LayoutType {
     Tiled,
     Monocle,
 }
@@ -556,140 +549,6 @@ pub(crate) enum AreaPeak {
 pub(crate) enum StateTransition {
     Enter,
     Exit,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct NodeSelect {
-    automatic:     bool,
-    focused:       bool,
-    active:        bool,
-    local:         bool,
-    leaf:          bool,
-    window:        bool,
-    tiled:         bool,
-    pseudo_tiled:  bool,
-    floating:      bool,
-    fullscreen:    bool,
-    hidden:        bool,
-    sticky:        bool,
-    private:       bool,
-    locked:        bool,
-    marked:        bool,
-    urgent:        bool,
-    same_class:    bool,
-    descendant_of: bool,
-    ancestor_of:   bool,
-    below:         bool,
-    normal:        bool,
-    above:         bool,
-    horizontal:    bool,
-    vertical:      bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct DesktopSelect {
-    occupied:     bool,
-    focused:      bool,
-    active:       bool,
-    urgent:       bool,
-    local:        bool,
-    tiled:        bool,
-    monocle:      bool,
-    user_tiled:   bool,
-    user_monocle: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct MonitorSelect {
-    occupied: bool,
-    focused:  bool,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct Client {
-    class_name:         String,
-    instance_name:      String,
-    name:               String,
-    border_width:       usize,
-    state:              ClientState,
-    last_state:         ClientState,
-    layer:              StackLayer,
-    last_layer:         StackLayer,
-    floating_rectangle: Rectangle,
-    tilde_rectangle:    Rectangle,
-    size_hints:         WmSizeHints,
-    icccm_props:        IcccmProps,
-    wm_flags:           WindowState,
-
-    urgent: bool,
-    shown:  bool,
-
-    pid:  Option<Pid>,
-    ppid: Option<Pid>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct Presel {
-    split_ratio: bool,
-    split_dir:   bool,
-    feedback:    Window,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct Constraint {
-    min_width:  u16,
-    min_height: u16,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct Node {
-    /// `id` of the [`Node`]
-    id:           Xid,
-    split_type:   SplitType,
-    /// Ratio of the [`Split`]
-    split_ratio:  f64,
-    /// Preselection information
-    presel:       Presel,
-    /// Window dimensions
-    rectangle:    Rectangle,
-    /// [`Constraint`]s of this [`Node`]
-    constraints:  Constraint,
-    /// Is the current [`Node`] vacant?
-    vacant:       bool,
-    /// Is the current [`Node`] hidden?
-    hidden:       bool,
-    /// Is the current [`Node`] sticky?
-    sticky:       bool,
-    /// Is the current [`Node`] private?
-    private:      bool,
-    /// Is the current [`Node`] locked?
-    locked:       bool,
-    /// Is the current [`Node`] marked?
-    marked:       bool,
-    /// First child [`Node`] of current [`Node`]
-    first_child:  Box<Self>,
-    /// Second child [`Node`] of current [`Node`]
-    second_child: Box<Self>,
-    /// Parent [`Node`] of current [`Node`]
-    parent:       Box<Self>,
-    /// Master [`Client`] running this [`Node`]
-    client:       Client,
-}
-
-/// Padding around a window
-#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Padding {
-    pub(crate) top:    u32,
-    pub(crate) right:  u32,
-    pub(crate) bottom: u32,
-    pub(crate) left:   u32,
-}
-
-impl Padding {
-    /// Create a new [`Padding`]
-    pub(crate) const fn new(top: u32, right: u32, bottom: u32, left: u32) -> Self {
-        Self { top, right, bottom, left }
-    }
 }
 
 /// Tightness of algorithm used to decide whether a [`Window`] is on the
@@ -715,55 +574,6 @@ pub(crate) enum ChildPolarity {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Desktop {
-    name:         String,
-    id:           Xid,
-    layout:       Layout,
-    user_layout:  Layout,
-    root:         Node,
-    focus:        Node,
-    padding:      Padding,
-    window_gap:   isize,
-    border_width: usize,
-    // prev:         Box<Self>,
-    // next:         Box<Self>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct Monitor {
-    name:         String,
-    id:           Xid,
-    randr_id:     Output,
-    root:         Window,
-    wired:        bool,
-    padding:      Padding,
-    sticky_count: usize,
-    window_gap:   isize,
-    border_width: usize,
-    rectangle:    Rectangle,
-    desk:         Desktop,
-    desk_head:    Desktop,
-    desk_tail:    Desktop,
-    prev:         Box<Self>,
-    next:         Box<Self>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct Coordinates {
-    monitor: Monitor,
-    desktop: Desktop,
-    node:    Node,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct History {
-    loc:    Coordinates,
-    latest: bool,
-    prev:   Box<Self>,
-    next:   Box<Self>,
-}
-
-#[derive(Debug, Clone)]
 pub(crate) struct StackingList {
     node: Node,
     prev: Box<Self>,
@@ -777,86 +587,71 @@ pub(crate) struct EventQueue {
     next:  Box<Self>,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct SubscriberList {
-    // file: Stream,
-    fifo_path: String,
-    field:     usize,
-    count:     usize,
-    prev:      Box<Self>,
-    next:      Box<Self>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct Rule {
-    class_name:    String,
-    instance_name: String,
-    name:          String,
-    effect:        String,
-    one_shot:      bool,
-    prev:          Box<Self>,
-    next:          Box<Self>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct RuleConsequence {
-    class_name:    String,
-    instance_name: String,
-    name:          String,
-    monitor_desc:  String,
-    desktop_desc:  String,
-    node_desc:     String,
-    split_dir:     Direction,
-    split_ratio:   f64,
-    layer:         StackLayer,
-    state:         ClientState,
-    hidden:        bool,
-    sticky:        bool,
-    private:       bool,
-    locked:        bool,
-    marked:        bool,
-    center:        bool,
-    follow:        bool,
-    manage:        bool,
-    focus:         bool,
-    border:        bool,
-    rect:          Rectangle,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct PendingRule {
-    fd:         usize,
-    win:        Window,
-    csq:        RuleConsequence,
-    event_head: EventQueue,
-    event_tail: EventQueue,
-    prev:       Box<Self>,
-    next:       Box<Self>,
-}
-
 // ====================================================================
 // ====================================================================
 
 use x11rb::properties::{AspectRatio, WmSizeHints};
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct Position {
-    pub(crate) x: i32,
-    pub(crate) y: i32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// An aspect ratio `numerator` / `denominator`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) struct Ratio {
+    /// The numerator of the aspect [`Ratio`]
     pub(crate) numerator:   i32,
+    /// The denomerator of the aspect [`Ratio`]
     pub(crate) denominator: i32,
 }
 
-#[derive(Debug, Copy, Clone, PartialOrd)]
+impl Ratio {
+    /// Create a new [`Ratio]
+    pub(crate) const fn new(numerator: i32, denominator: i32) -> Self {
+        Self { numerator, denominator }
+    }
+}
+
+// ============================== Hints ===============================
+
+// pub flags: u32,
+// pub x: i32,
+// pub y: i32,
+// pub width: i32,
+// pub height: i32,
+// pub min_width: i32,
+// pub min_height: i32,
+// pub max_width: i32,
+// pub max_height: i32,
+// pub width_inc: i32,
+// pub height_inc: i32,
+// pub min_aspect_num: i32,
+// pub min_aspect_den: i32,
+// pub max_aspect_num: i32,
+// pub max_aspect_den: i32,
+// pub base_width: i32,
+// pub base_height: i32,
+// pub win_gravity: u32,
+
+// #[derive(Debug, Copy, Clone, PartialEq)]
+// pub struct SizeHints2 {
+//     pub position:   Option<(i32, i32)>,
+//     pub size:       Option<(i32, i32)>,
+//     pub min_size:   Option<(i32, i32)>,
+//     pub max_size:   Option<(i32, i32)>,
+//     pub resize:     Option<(i32, i32)>,
+//     pub min_aspect: Option<(i32, i32)>,
+//     pub max_aspect: Option<(i32, i32)>,
+//     pub base:       Option<(i32, i32)>,
+//     pub gravity:    Option<u32>,
+// }
+
+#[derive(Debug, Copy, Clone, PartialOrd, Serialize, Deserialize)]
 pub(crate) struct SizeHints {
     /// User flags
     pub(crate) by_user:          bool,
     /// User-specified size
-    pub(crate) pos:              Option<Position>,
+    pub(crate) position:         Option<Point>,
+    /// Program-specified base width
+    pub(crate) base_width:       Option<u32>,
+    /// Program-specified base height
+    pub(crate) base_height:      Option<u32>,
     /// Program-specified minimum width
     pub(crate) min_width:        Option<u32>,
     /// Program-specified minimum height
@@ -865,10 +660,6 @@ pub(crate) struct SizeHints {
     pub(crate) max_width:        Option<u32>,
     /// Program-specified maximum height
     pub(crate) max_height:       Option<u32>,
-    /// Program-specified base width
-    pub(crate) base_width:       Option<u32>,
-    /// Program-specified base height
-    pub(crate) base_height:      Option<u32>,
     /// Program-specified resize increment for width
     pub(crate) inc_width:        Option<u32>,
     /// Program-specified resize increment for height
@@ -898,6 +689,158 @@ impl PartialEq for SizeHints {
 
 /// Cannot implement [`Eq`] for [`f64`]
 impl Eq for SizeHints {}
+
+#[derive(Debug, Copy, Clone, PartialOrd, Ord, PartialEq, Eq)]
+pub(crate) struct Hints {
+    pub(crate) urgent:        bool,
+    pub(crate) input:         Option<bool>,
+    pub(crate) initial_state: Option<IcccmWindowState>,
+    pub(crate) group:         Option<Window>,
+}
+
+impl Hints {
+    const fn new(
+        urgent: bool,
+        input: Option<bool>,
+        initial_state: Option<IcccmWindowState>,
+        group: Option<Window>,
+    ) -> Self {
+        Self {
+            urgent,
+            input,
+            initial_state,
+            group,
+        }
+    }
+}
+
+// ============================== Strut ===============================
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) struct Strut {
+    pub(crate) window: Window,
+    pub(crate) width:  u32,
+}
+
+impl Strut {
+    pub(crate) const fn new(window: Window, width: u32) -> Self {
+        Self { window, width }
+    }
+}
+
+impl PartialOrd for Strut {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Strut {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other.width.cmp(&self.width)
+    }
+}
+
+// ============================== Panel ===============================
+
+// #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+// pub(crate) struct Panel {
+//     window: Window,
+//     strut:  WMStrut,
+// }
+
+// impl Panel {
+//     pub(crate) fn new(window: Window, strut: WmStrut) -> Self {
+//         Self { window, strut }
+//     }
+// }
+
+// #[derive(Debug, PartialEq, Default, Copy, Clone, Eq)]
+// pub(crate) struct WMStrut {
+//     left:   u32,
+//     right:  u32,
+//     top:    u32,
+//     bottom: u32,
+// }
+//
+// impl PartialOrd for Panel {
+//     fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+//         Some(self.cmp(other))
+//     }
+// }
+//
+// impl Ord for Panel {
+//     fn cmp(&self, other: &Self) -> cmp::Ordering {
+//         other.strut.cmp(&self.strut)
+//     }
+// }
+
+// ┌───────┐
+// │ Other │
+// └───────┘
+
+/// Window focus event
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub(crate) enum FocusEvent {
+    /// Window came into focus
+    Gain,
+    /// Window lost focus
+    Lose,
+}
+
+/// A display event
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub(crate) enum DisplayEvent {
+    /// Area of a [`Window`] needs to be updated
+    Expose(Rectangle),
+    /// Window focus changed
+    Focus(FocusEvent),
+    /// Window dimensions changed
+    Resize(Dimension),
+}
+
+/// A configure request or notification when a client changes position or size
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct ConfigureEvent {
+    /// The ID of the window that had a property changed
+    pub(crate) id:      Xid,
+    /// The new window size
+    pub(crate) rect:    Rectangle,
+    /// Is this window the root window?
+    pub(crate) is_root: bool,
+}
+
+/// A notification that a window has become visible
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct ExposeEvent {
+    /// The ID of the window that has become exposed
+    pub(crate) id:    Xid,
+    /// The current size and position of the window
+    pub(crate) r:     Rectangle,
+    /// How many following expose events are pending
+    pub(crate) count: usize,
+}
+
+/// A notification that the mouse pointer has entered or left a window
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct PointerChange {
+    /// The ID of the window that was entered
+    pub(crate) id:       Xid,
+    /// Absolute coordinate of the event
+    pub(crate) abs:      Point,
+    /// Coordinate of the event relative to top-left of the window itself
+    pub(crate) relative: Point,
+}
+
+/// A property change on a known client
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct PropertyEvent {
+    /// The ID of the window that had a property changed
+    pub(crate) id:      Xid,
+    /// The property that changed
+    pub(crate) atom:    String,
+    /// Is this window the root window?
+    pub(crate) is_root: bool,
+}
 
 // ====================================================================
 // ====================================================================

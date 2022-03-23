@@ -27,12 +27,37 @@ use shellexpand::LookupError;
 use std::{
     borrow::Cow,
     env,
+    hash::{BuildHasherDefault, Hasher},
     io::{self, Write},
     panic,
     path::PathBuf,
     thread,
 };
 use which::which;
+
+/// Used as a custom inner state/hasher for any `Hash` item in the [`std`]
+#[derive(Default)]
+pub(crate) struct IdHasher {
+    /// Current state of the hasher
+    state: u64,
+}
+
+impl Hasher for IdHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.state = self.state.rotate_left(8) + u64::from(byte);
+        }
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.state
+    }
+}
+
+/// Type alias to build a `Hash` using [`IdHasher`]
+pub(crate) type BuildIdHasher = BuildHasherDefault<IdHasher>;
 
 /// Shorter way of testing if the user wants color for the output of `--help`
 pub(crate) fn wants_color() -> bool {
