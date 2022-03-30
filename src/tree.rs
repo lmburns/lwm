@@ -1,9 +1,9 @@
 //! Interacting with the [`Window`] tree
 
 use crate::{
+    core::{Direction, LayoutType, Output, Window, Xid},
     geometry::{Padding, Rectangle},
-    client::Client,
-    types::{Direction, LayoutType, Output, Window, Xid},
+    monitor::client::Client,
 };
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -130,8 +130,8 @@ impl Node {
     // fn update_constraints(&mut self) {
     //     if self.split_type == SplitType::Vertical {
     //         self.constraints.min_width =
-    //             self.first_child.constraints.min_width + self.second_child.constraints.min_width;
-    //     }
+    //             self.first_child.constraints.min_width +
+    // self.second_child.constraints.min_width;     }
     // }
 
     /// Serialize [`Node`] into a `json` string

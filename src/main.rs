@@ -126,25 +126,24 @@
 )]
 
 mod cli;
-mod client;
 mod config;
+mod core;
 mod cycle;
 mod error;
 mod events;
 mod geometry;
-mod input;
 mod macros;
+mod manager;
 mod messages;
+mod monitor;
 mod pointer;
 mod query;
 mod rule;
 mod stack;
 mod subscribe;
 mod tree;
-mod types;
 mod utils;
-mod xconnection;
-mod xutils;
+mod x;
 
 use std::{
     cmp::Reverse,
@@ -166,8 +165,7 @@ use x11rb::{
     CURRENT_TIME,
 };
 
-use xconnection::XConnection;
-use xutils::XUtility;
+use x::{utils::XUtility, xconnection::XConnection};
 
 use crate::tree::Presel;
 

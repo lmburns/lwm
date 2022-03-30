@@ -3,13 +3,18 @@
 #![allow(clippy::missing_docs_in_private_items)]
 
 use crate::{
+    config::Config,
+    core::{Identify, Pid, Window, WindowState, WindowType, Xid, MISSING_VALUE},
     geometry::{Extents, Padding, Point, Rectangle},
     stack::StackLayer,
-    types::{IcccmProps, Identify, Pid, SizeHints, Window, WindowState, WindowType, Xid},
+    x::property::SizeHints,
 };
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
+use x11rb::properties::WmSizeHints;
+
+// ============================= ClientState===========================
 
 /// Current state of the [`Client`]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -24,11 +29,34 @@ pub(crate) enum ClientState {
     Fullscreen,
 }
 
+// ============================= IcccmProps ===========================
+
+/// ICCCM window properties
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(crate) struct IcccmProps {
+    /// Request to take focus of the window
+    take_focus:    bool,
+    input_hint:    bool,
+    /// Request to delete window
+    delete_window: bool,
+}
+
+impl Default for IcccmProps {
+    fn default() -> Self {
+        Self {
+            take_focus:    false,
+            input_hint:    true,
+            delete_window: false,
+        }
+    }
+}
+
 // =============================== Client =============================
 
 /// Information about a top-level [`Window`]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Client {
+    window:   Window,
     name:     String,
     class:    String,
     instance: String,
@@ -40,7 +68,7 @@ pub(crate) struct Client {
     state:              ClientState,
     last_state:         ClientState,
     floating_rectangle: Rectangle,
-    tilde_rectangle:    Rectangle,
+    tiled_rectangle:    Rectangle,
     size_hints:         SizeHints,
     icccm_props:        IcccmProps,
     wm_flags:           WindowState,
@@ -51,6 +79,51 @@ pub(crate) struct Client {
     pid:  Option<Pid>,
     ppid: Option<Pid>,
 }
+
+impl PartialEq for Client {
+    fn eq(&self, other: &Self) -> bool {
+        self.window == other.window
+    }
+}
+
+// impl Default for Client {
+//     fn default() -> Self {
+//         Self {
+//             window:             0,
+//             name:               String::from(MISSING_VALUE),
+//             class:              String::from(MISSING_VALUE),
+//             instance:           String::from(MISSING_VALUE),
+//             layer:              StackLayer::Normal,
+//             last_layer:         StackLayer::Normal,
+//             state:              ClientState::Tiled,
+//             last_state:         ClientState::Tiled,
+//             border_width:       1,
+//             urgent:             false,
+//             shown:              false,
+//             floating_rectangle: Rectangle::default(),
+//             tiled_rectangle:    Rectangle::default(),
+//             icccm_props:        IcccmProps::default(),
+//         }
+//     }
+// }
+//
+// impl Client {
+//     pub(crate) fn new(config: &Config) -> Self {
+//         Self {
+//             window:       0,
+//             name:         String::from(MISSING_VALUE),
+//             class:        String::from(MISSING_VALUE),
+//             instance:     String::from(MISSING_VALUE),
+//             layer:        StackLayer::Normal,
+//             last_layer:   StackLayer::Normal,
+//             state:        ClientState::Tiled,
+//             last_state:   ClientState::Tiled,
+//             border_width: config.global.border_width,
+//             urgent:       false,
+//             shown:        false,
+//         }
+//     }
+// }
 
 // ============================== Client ==============================
 

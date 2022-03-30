@@ -1,12 +1,33 @@
 //! Structures used to map areas on the screen
 
-use crate::types::{Corner, Direction, Tightness};
+use crate::core::{Corner, Direction, Tightness};
 use serde::{Deserialize, Serialize};
 use std::ops::{Add, AddAssign, Div, Mul, Sub, SubAssign};
 use tern::t;
 use x11rb::protocol::xproto::ConfigureWindowAux;
 // use x11rb::protocol::xproto::{self, Point as XPoint, Rectangle as
 // XRectangle};
+
+// =============================== Ratio ==============================
+// ====================================================================
+
+// use x11rb::properties::{AspectRatio, WmSizeHints};
+
+/// An aspect ratio `numerator` / `denominator`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(crate) struct Ratio {
+    /// The numerator of the aspect [`Ratio`]
+    pub(crate) numerator:   i32,
+    /// The denomerator of the aspect [`Ratio`]
+    pub(crate) denominator: i32,
+}
+
+impl Ratio {
+    /// Create a new [`Ratio]
+    pub(crate) const fn new(numerator: i32, denominator: i32) -> Self {
+        Self { numerator, denominator }
+    }
+}
 
 // ============================== Padding =============================
 // ====================================================================
@@ -167,6 +188,13 @@ impl Dimension {
             _ => unreachable!(),
         }
     }
+
+    /// Convert to a [`ConfigureWindowAux`]
+    pub(crate) fn to_aux(&self) -> ConfigureWindowAux {
+        ConfigureWindowAux::new()
+            .width(self.width)
+            .height(self.height)
+    }
 }
 
 impl Add<Self> for Point {
@@ -236,6 +264,11 @@ impl Rectangle {
         }
     }
 
+    /// Create a zeroed [`Rectangle`]
+    pub(crate) fn zeroed() -> Self {
+        Self::default()
+    }
+
     /// Check if the [`Rectangle`]'s area/dimensions = 0
     pub(crate) const fn is_zero(&self) -> bool {
         self.dimension.is_zero()
@@ -288,18 +321,6 @@ impl Rectangle {
             && point.y >= self.point.y
             && point.y <= self.point.y + self.dimension.height as i32
     }
-
-    /// Delete this function if not needed
-    pub(crate) const fn contains1(&self, rect: Self) -> bool {
-        self.point.x <= rect.point.x
-            && (self.point.x + self.dimension.width as i32)
-                >= (rect.point.x + rect.dimension.width as i32)
-            && self.point.y <= rect.point.y
-            && (self.point.y + self.dimension.height as i32)
-                >= (rect.point.y + rect.dimension.height as i32)
-    }
-
-    // THESE ARE EQUIVALENT
 
     /// Test whether the given [`Rectangle`] is contained within another
     pub(crate) const fn contains(&self, rect: Self) -> bool {
@@ -435,8 +456,24 @@ impl Rectangle {
         }
     }
 
+    /// Split the [`Rectangle`] as the given width
+    pub(crate) const fn split_at_width(&self, width: u32) -> (Self, Self) {
+        (
+            // Left
+            Self {
+                point:     self.point,
+                dimension: Dimension::new(self.dimension.height, width),
+            },
+            // Right
+            Self {
+                point:     Point::new(self.point.x + width as i32, self.point.y),
+                dimension: Dimension::new(self.dimension.height, self.dimension.width - width),
+            },
+        )
+    }
+
     /// Create a [`ConfigureWindowAux`] from a [`Rectangle`]
-    pub(crate) fn aux(&self, width: u32) -> ConfigureWindowAux {
+    pub(crate) fn to_aux(&self, width: u32) -> ConfigureWindowAux {
         ConfigureWindowAux::new()
             .x(self.point.x)
             .y(self.point.y)

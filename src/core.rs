@@ -3,10 +3,9 @@
 #![allow(clippy::missing_docs_in_private_items)]
 
 use crate::{
-    geometry::{Dimension, Point, Rectangle},
-    input::ModMask,
+    geometry::{Dimension, Point, Rectangle, Ratio},
+    x::{input::ModMask, xconnection::Atoms},
     tree::Node,
-    xconnection::Atoms,
 };
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -59,6 +58,45 @@ pub(crate) const DRAG_BUTTON: Button = 1;
 macro_rules! WM_NAME (
     () => { "lwm" };
 );
+
+// ============================== XWindow =============================
+// ====================================================================
+
+/// Representation of an X-window with its geometrical data
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct XWindow {
+    /// The ID of the window
+    pub(crate) id:   Window,
+    /// Window size
+    pub(crate) rect: Rectangle,
+}
+
+impl XWindow {
+    /// Create a new [`XWindow`]
+    pub(crate) const fn new(id: Window, rect: Rectangle) -> Self {
+        Self { id, rect }
+    }
+
+    /// Create a blank window
+    pub(crate) fn zeroed() -> Self {
+        Self::default()
+    }
+}
+
+impl PartialEq for XWindow {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl From<Window> for XWindow {
+    fn from(w: Window) -> Self {
+        Self {
+            id:   w,
+            rect: Rectangle::zeroed(),
+        }
+    }
+}
 
 // =========================== Window Edges ===========================
 // ====================================================================
@@ -401,44 +439,6 @@ impl fmt::Display for WindowClass {
     }
 }
 
-// ========================== Icccm Values =========================
-
-// NOTE: x11::properties::WmHintsState
-/// Possible values for setting the `WM_STATE` property on a client.
-///
-/// See the [ICCCM docs][1] for more information.
-///
-/// [1]: https://tronche.com/gui/x/icccm/sec-4.html#s-4.1.3.1
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum IcccmWindowState {
-    /// Newly created windows
-    Withdrawn,
-    /// Window is visible
-    Normal,
-    /// Window's icon is visible
-    Iconic,
-}
-
-impl From<IcccmWindowState> for u32 {
-    fn from(u: IcccmWindowState) -> Self {
-        match u {
-            IcccmWindowState::Withdrawn => 0,
-            IcccmWindowState::Normal => 1,
-            IcccmWindowState::Iconic => 3,
-        }
-    }
-}
-
-/// ICCCM window properties
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub(crate) struct IcccmProps {
-    /// Request to take focus of the window
-    take_focus:    bool,
-    input_hint:    bool,
-    /// Request to delete window
-    delete_window: bool,
-}
-
 // ============================== Unused ==============================
 // ====================================================================
 
@@ -590,130 +590,6 @@ pub(crate) struct EventQueue {
 // ====================================================================
 // ====================================================================
 
-use x11rb::properties::{AspectRatio, WmSizeHints};
-
-/// An aspect ratio `numerator` / `denominator`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub(crate) struct Ratio {
-    /// The numerator of the aspect [`Ratio`]
-    pub(crate) numerator:   i32,
-    /// The denomerator of the aspect [`Ratio`]
-    pub(crate) denominator: i32,
-}
-
-impl Ratio {
-    /// Create a new [`Ratio]
-    pub(crate) const fn new(numerator: i32, denominator: i32) -> Self {
-        Self { numerator, denominator }
-    }
-}
-
-// ============================== Hints ===============================
-
-// pub flags: u32,
-// pub x: i32,
-// pub y: i32,
-// pub width: i32,
-// pub height: i32,
-// pub min_width: i32,
-// pub min_height: i32,
-// pub max_width: i32,
-// pub max_height: i32,
-// pub width_inc: i32,
-// pub height_inc: i32,
-// pub min_aspect_num: i32,
-// pub min_aspect_den: i32,
-// pub max_aspect_num: i32,
-// pub max_aspect_den: i32,
-// pub base_width: i32,
-// pub base_height: i32,
-// pub win_gravity: u32,
-
-// #[derive(Debug, Copy, Clone, PartialEq)]
-// pub struct SizeHints2 {
-//     pub position:   Option<(i32, i32)>,
-//     pub size:       Option<(i32, i32)>,
-//     pub min_size:   Option<(i32, i32)>,
-//     pub max_size:   Option<(i32, i32)>,
-//     pub resize:     Option<(i32, i32)>,
-//     pub min_aspect: Option<(i32, i32)>,
-//     pub max_aspect: Option<(i32, i32)>,
-//     pub base:       Option<(i32, i32)>,
-//     pub gravity:    Option<u32>,
-// }
-
-#[derive(Debug, Copy, Clone, PartialOrd, Serialize, Deserialize)]
-pub(crate) struct SizeHints {
-    /// User flags
-    pub(crate) by_user:          bool,
-    /// User-specified size
-    pub(crate) position:         Option<Point>,
-    /// Program-specified base width
-    pub(crate) base_width:       Option<u32>,
-    /// Program-specified base height
-    pub(crate) base_height:      Option<u32>,
-    /// Program-specified minimum width
-    pub(crate) min_width:        Option<u32>,
-    /// Program-specified minimum height
-    pub(crate) min_height:       Option<u32>,
-    /// Program-specified maximum width
-    pub(crate) max_width:        Option<u32>,
-    /// Program-specified maximum height
-    pub(crate) max_height:       Option<u32>,
-    /// Program-specified resize increment for width
-    pub(crate) inc_width:        Option<u32>,
-    /// Program-specified resize increment for height
-    pub(crate) inc_height:       Option<u32>,
-    /// Program-specified minimum aspect ratio
-    pub(crate) min_ratio:        Option<f64>,
-    /// Program-specified maximum aspect ratio
-    pub(crate) max_ratio:        Option<f64>,
-    pub(crate) min_ratio_vulgar: Option<Ratio>,
-    pub(crate) max_ratio_vulgar: Option<Ratio>,
-}
-
-impl PartialEq for SizeHints {
-    fn eq(&self, other: &Self) -> bool {
-        self.min_width == other.min_width
-            && self.min_height == other.min_height
-            && self.max_width == other.max_width
-            && self.max_height == other.max_height
-            && self.base_width == other.base_width
-            && self.base_height == other.base_height
-            && self.inc_width == other.inc_width
-            && self.inc_height == other.inc_height
-            && self.min_ratio_vulgar == other.min_ratio_vulgar
-            && self.max_ratio_vulgar == other.max_ratio_vulgar
-    }
-}
-
-/// Cannot implement [`Eq`] for [`f64`]
-impl Eq for SizeHints {}
-
-#[derive(Debug, Copy, Clone, PartialOrd, Ord, PartialEq, Eq)]
-pub(crate) struct Hints {
-    pub(crate) urgent:        bool,
-    pub(crate) input:         Option<bool>,
-    pub(crate) initial_state: Option<IcccmWindowState>,
-    pub(crate) group:         Option<Window>,
-}
-
-impl Hints {
-    const fn new(
-        urgent: bool,
-        input: Option<bool>,
-        initial_state: Option<IcccmWindowState>,
-        group: Option<Window>,
-    ) -> Self {
-        Self {
-            urgent,
-            input,
-            initial_state,
-            group,
-        }
-    }
-}
-
 // ============================== Strut ===============================
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -774,73 +650,13 @@ impl Ord for Strut {
 //     }
 // }
 
-// ┌───────┐
-// │ Other │
-// └───────┘
+// ============================= StackMode =============================
 
-/// Window focus event
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub(crate) enum FocusEvent {
-    /// Window came into focus
-    Gain,
-    /// Window lost focus
-    Lose,
+#[derive(Debug, Copy, Clone, PartialOrd, Ord, PartialEq, Eq)]
+pub(crate) enum StackMode {
+    Above,
+    Below,
+    // TopIf,
+    // BottomIf,
+    // Opposite,
 }
-
-/// A display event
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub(crate) enum DisplayEvent {
-    /// Area of a [`Window`] needs to be updated
-    Expose(Rectangle),
-    /// Window focus changed
-    Focus(FocusEvent),
-    /// Window dimensions changed
-    Resize(Dimension),
-}
-
-/// A configure request or notification when a client changes position or size
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct ConfigureEvent {
-    /// The ID of the window that had a property changed
-    pub(crate) id:      Xid,
-    /// The new window size
-    pub(crate) rect:    Rectangle,
-    /// Is this window the root window?
-    pub(crate) is_root: bool,
-}
-
-/// A notification that a window has become visible
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct ExposeEvent {
-    /// The ID of the window that has become exposed
-    pub(crate) id:    Xid,
-    /// The current size and position of the window
-    pub(crate) r:     Rectangle,
-    /// How many following expose events are pending
-    pub(crate) count: usize,
-}
-
-/// A notification that the mouse pointer has entered or left a window
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct PointerChange {
-    /// The ID of the window that was entered
-    pub(crate) id:       Xid,
-    /// Absolute coordinate of the event
-    pub(crate) abs:      Point,
-    /// Coordinate of the event relative to top-left of the window itself
-    pub(crate) relative: Point,
-}
-
-/// A property change on a known client
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct PropertyEvent {
-    /// The ID of the window that had a property changed
-    pub(crate) id:      Xid,
-    /// The property that changed
-    pub(crate) atom:    String,
-    /// Is this window the root window?
-    pub(crate) is_root: bool,
-}
-
-// ====================================================================
-// ====================================================================

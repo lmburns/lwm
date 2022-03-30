@@ -1,6 +1,6 @@
 //! The local information about the X-Server window stack
 
-use crate::types::Window;
+use crate::core::Window;
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
 

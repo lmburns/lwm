@@ -1,9 +1,9 @@
 //! Configuration options
 
 use crate::{
+    core::{AutomaticScheme, ChildPolarity, PointerAction, StateTransition, Tightness},
     geometry::Padding,
-    input::{Button, ModMask},
-    types::{AutomaticScheme, ChildPolarity, PointerAction, StateTransition, Tightness},
+    x::input::{Button, ModMask},
     utils::{deserialize_absolute_path, deserialize_shellexpand},
 };
 use anyhow::{Context, Result};

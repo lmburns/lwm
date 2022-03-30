@@ -25,7 +25,7 @@
 // TODO: Possibly remove unwindable
 
 use crate::{
-    types::{Identify, Idx, Xid},
+    core::{Identify, Idx, Xid},
     utils::BuildIdHasher,
 };
 use anyhow::{Context, Result};

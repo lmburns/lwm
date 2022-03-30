@@ -3,10 +3,10 @@
 #![allow(clippy::missing_docs_in_private_items)]
 
 use crate::{
-    client::ClientState,
+    monitor::client::ClientState,
     geometry::Rectangle,
     stack::StackLayer,
-    types::{Direction, EventQueue, Window},
+    core::{Direction, EventQueue, Window},
 };
 
 use anyhow::{Context, Result};
