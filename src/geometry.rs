@@ -2,7 +2,10 @@
 
 use crate::core::{Corner, Direction, Tightness};
 use serde::{Deserialize, Serialize};
-use std::ops::{Add, AddAssign, Div, Mul, Sub, SubAssign};
+use std::{
+    fmt,
+    ops::{Add, AddAssign, Div, Mul, Sub, SubAssign},
+};
 use tern::t;
 use x11rb::protocol::xproto::ConfigureWindowAux;
 // use x11rb::protocol::xproto::{self, Point as XPoint, Rectangle as
@@ -134,6 +137,12 @@ impl Point {
     }
 }
 
+impl fmt::Display for Point {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "x: {}, y: {}", self.x, self.y)
+    }
+}
+
 // ============================= Dimension ===========================
 // ====================================================================
 
@@ -194,6 +203,12 @@ impl Dimension {
         ConfigureWindowAux::new()
             .width(self.width)
             .height(self.height)
+    }
+}
+
+impl fmt::Display for Dimension {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "width: {}, height: {}", self.width, self.height)
     }
 }
 
@@ -472,14 +487,21 @@ impl Rectangle {
         )
     }
 
+    // TODO: Possibly add `border_pixel`
     /// Create a [`ConfigureWindowAux`] from a [`Rectangle`]
-    pub(crate) fn to_aux(&self, width: u32) -> ConfigureWindowAux {
+    pub(crate) fn to_aux(&self, border_width: u32) -> ConfigureWindowAux {
         ConfigureWindowAux::new()
             .x(self.point.x)
             .y(self.point.y)
-            .width(self.dimension.width - width * 2)
-            .height(self.dimension.height - width * 2)
-            .border_width(width)
+            .width(self.dimension.width - border_width * 2)
+            .height(self.dimension.height - border_width * 2)
+            .border_width(border_width)
+    }
+}
+
+impl fmt::Display for Rectangle {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "({}), ({})", self.point, self.dimension)
     }
 }
 

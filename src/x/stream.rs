@@ -107,7 +107,7 @@ impl Stream {
 #[attr_reader(dpy, atoms, meta_window, screen, socket)]
 pub(crate) struct Aux {
     /// The actual [`Connection`](RustConnection)
-    dpy:         Arc<RustConnection>,
+    pub(crate) dpy:         Arc<RustConnection>,
     /// The [`Atoms`] of the connection
     atoms:       Atoms,
     /// Generated ID
@@ -115,7 +115,7 @@ pub(crate) struct Aux {
     /// Screen number the connection is attached to
     screen:      usize,
 
-    // Screen size
+    /// Screen size
     screen_size: Dimension,
 
     /// Connection to a Unix socket

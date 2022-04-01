@@ -3,8 +3,8 @@
 use crate::{
     core::{AutomaticScheme, ChildPolarity, PointerAction, StateTransition, Tightness},
     geometry::Padding,
-    x::input::{Button, ModMask},
     utils::{deserialize_absolute_path, deserialize_shellexpand},
+    x::input::{Button, ModMask},
 };
 use anyhow::{Context, Result};
 use colored::Colorize;
@@ -50,7 +50,7 @@ pub(crate) static SHELL: Lazy<PathBuf> = Lazy::new(|| {
 // =============== GlobalSettings ================= [[[
 
 /// Global configuration settings
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct GlobalSettings {
     /// The shell to use for running commands
@@ -119,7 +119,7 @@ pub(crate) struct GlobalSettings {
 
     /// Size of the border around the window
     #[serde(alias = "border-width")]
-    pub(crate) border_width: usize,
+    pub(crate) border_width: u32,
 
     /// Ratio of window splits
     #[serde(alias = "split-ratio")]
@@ -484,7 +484,7 @@ impl Default for GlobalSettings {
             padding:                     Padding::new(0, 0, 0, 0),
             monocle_padding:             Padding::new(0, 0, 0, 0),
             window_gap:                  6_usize,
-            border_width:                1_usize,
+            border_width:                1_u32,
             split_ratio:                 0.5_f32,
             initial_polarity:            None,
             automatic_scheme:            AutomaticScheme::LongestSide,
@@ -521,6 +521,58 @@ impl Default for GlobalSettings {
             remove_disabled_monitors:   false,
             remove_unplugged_monitors:  false,
             merge_overlapping_monitors: false,
+        }
+    }
+}
+
+// NOTE: Does a custom implementation of `Clone` do anything?
+impl Clone for GlobalSettings {
+    fn clone(&self) -> Self {
+        Self {
+            shell: self.shell.clone(),
+            pid_file: self.pid_file.clone(),
+            log_to_file: self.log_to_file,
+            log_dir: self.log_dir.clone(),
+            autorepeat_delay: self.autorepeat_delay,
+            autorepeat_interval: self.autorepeat_interval,
+            desktops: self.desktops.clone(),
+            external_rules_cmd: self.external_rules_cmd.clone(),
+            status_prefix: self.status_prefix.clone(),
+            normal_border_color: self.normal_border_color.clone(),
+            active_border_color: self.active_border_color.clone(),
+            focused_border_color: self.focused_border_color.clone(),
+            presel_feedback_color: self.presel_feedback_color.clone(),
+            padding: self.padding,
+            monocle_padding: self.monocle_padding,
+            window_gap: self.window_gap,
+            border_width: self.border_width,
+            split_ratio: self.split_ratio,
+            initial_polarity: self.initial_polarity,
+            automatic_scheme: self.automatic_scheme,
+            removal_adjustment: self.removal_adjustment,
+            directional_focus_tightness: self.directional_focus_tightness,
+            pointer_modifier: self.pointer_modifier,
+            pointer_motion_interval: self.pointer_motion_interval,
+            pointer_actions: self.pointer_actions.clone(),
+            mapping_events_count: self.mapping_events_count,
+            presel_feedback: self.presel_feedback,
+            borderless_monocle: self.borderless_monocle,
+            gapless_monocle: self.gapless_monocle,
+            single_monocle: self.single_monocle,
+            borderless_singleton: self.borderless_singleton,
+            focus_follows_pointer: self.focus_follows_pointer,
+            pointer_follows_focus: self.pointer_follows_focus,
+            pointer_follows_monitor: self.pointer_follows_monitor,
+            click_to_focus: self.click_to_focus,
+            swallow_first_click: self.swallow_first_click,
+            ignore_ewmh_focus: self.ignore_ewmh_focus,
+            ignore_ewmh_struts: self.ignore_ewmh_struts,
+            ignore_ewmh_fullscreen: self.ignore_ewmh_fullscreen,
+            center_pseudotiled: self.center_pseudotiled,
+            honor_size_hints: self.honor_size_hints,
+            remove_disabled_monitors: self.remove_disabled_monitors,
+            remove_unplugged_monitors: self.remove_unplugged_monitors,
+            merge_overlapping_monitors: self.merge_overlapping_monitors,
         }
     }
 }

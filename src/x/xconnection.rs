@@ -1,7 +1,7 @@
 //! The window manager
 
 use crate::{
-    config::Config,
+    config::{Config, GlobalSettings},
     core::{
         Atom,
         Button,
@@ -20,12 +20,12 @@ use crate::{
     monitor::client::IcccmProps,
     x::{
         property::{Hints, IcccmWindowState, SizeHints},
-        utils::Stack,
         stream::Aux,
+        utils::Stack,
     },
     WM_NAME,
 };
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use itertools::Itertools;
 use nix::poll::{poll, PollFd, PollFlags};
 use once_cell::sync::Lazy;
@@ -67,6 +67,8 @@ use x11rb::{
         xproto::{
             self,
             AtomEnum,
+            ButtonIndex,
+            ChangeGCAux,
             ChangeWindowAttributesAux,
             ClientMessageEvent,
             ConfigureWindowAux,
@@ -80,6 +82,7 @@ use x11rb::{
             GetPropertyReply,
             GetSelectionOwnerReply,
             GetWindowAttributesReply,
+            GrabMode,
             InputFocus,
             InternAtomReply,
             MapState,
@@ -276,34 +279,48 @@ atom_manager! {
 // impl ToString for Atoms {}
 // ]]] === Atoms ===
 
-// ============================ XConnection =========================== [[[
+// ============================ XConnection =========================== [[[]
 
-/// Mask for root window events
-const ROOT_EVENT_MASK: EventMask = EventMask::PROPERTY_CHANGE
-    | EventMask::SUBSTRUCTURE_REDIRECT
-    | EventMask::STRUCTURE_NOTIFY
-    | EventMask::BUTTON_PRESS
-    | EventMask::POINTER_MOTION
-    | EventMask::FOCUS_CHANGE;
+/// Hold all current masks
+struct Masks {
+    /// Mask for root window events
+    root_event_mask:   EventMask,
+    /// Mask for normal window events
+    window_event_mask: EventMask,
+    /// Mask for mouse events
+    frame_event_mask:  EventMask,
+    /// Mask for mouse events
+    mouse_event_mask:  EventMask,
+    /// Mask for regrabbing events
+    regrab_event_mask: EventMask,
+}
 
-/// Mask for normal window events
-const WINDOW_EVENT_MASK: EventMask =
-    EventMask::PROPERTY_CHANGE | EventMask::STRUCTURE_NOTIFY | EventMask::FOCUS_CHANGE;
-
-/// Mask for mouse events
-const FRAME_EVENT_MASK: EventMask = EventMask::STRUCTURE_NOTIFY
-    | EventMask::SUBSTRUCTURE_REDIRECT
-    | EventMask::SUBSTRUCTURE_NOTIFY
-    | EventMask::BUTTON_PRESS
-    | EventMask::BUTTON_RELEASE
-    | EventMask::POINTER_MOTION;
-
-/// Mask for mouse events
-const MOUSE_EVENT_MASK: EventMask =
-    EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::BUTTON_MOTION;
-
-/// Mask for regrabbing events
-const REGRAB_EVENT_MASK: EventMask = EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE;
+impl Masks {
+    /// Create a new [`Masks`]
+    fn new() -> Self {
+        Self {
+            root_event_mask:   EventMask::PROPERTY_CHANGE
+                | EventMask::SUBSTRUCTURE_REDIRECT
+                | EventMask::STRUCTURE_NOTIFY
+                | EventMask::BUTTON_PRESS
+                | EventMask::POINTER_MOTION
+                | EventMask::FOCUS_CHANGE,
+            window_event_mask: EventMask::PROPERTY_CHANGE
+                | EventMask::STRUCTURE_NOTIFY
+                | EventMask::FOCUS_CHANGE,
+            frame_event_mask:  EventMask::STRUCTURE_NOTIFY
+                | EventMask::SUBSTRUCTURE_REDIRECT
+                | EventMask::SUBSTRUCTURE_NOTIFY
+                | EventMask::BUTTON_PRESS
+                | EventMask::BUTTON_RELEASE
+                | EventMask::POINTER_MOTION,
+            mouse_event_mask:  EventMask::BUTTON_PRESS
+                | EventMask::BUTTON_RELEASE
+                | EventMask::BUTTON_MOTION,
+            regrab_event_mask: EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE,
+        }
+    }
+}
 
 // black_gc: Gcontext,
 // windows: Vec<WindowState>,
@@ -321,32 +338,27 @@ pub(crate) struct XConnection {
     win_types:  HashMap<Atom, WindowType>,
     /// A hash mapping an [`Atom`] to a [`WindowState`]
     win_states: HashMap<Atom, WindowState>,
-    // /// Background graphics context
-    // gctx:       xproto::Gcontext,
-
-    // /// Mask for root window events
-    // root_event_mask:   EventMask,
-    // /// Mask for normal window events
-    // window_event_mask: EventMask,
-    // /// Mask for frame window events
-    // frame_event_mask:  EventMask,
-    // /// Mask for mouse events
-    // mouse_event_mask:  EventMask,
-    // /// Mask for regrabbing events
-    // regrab_event_mask: EventMask,
+    /// Configuration of the user
+    config:     GlobalSettings,
+    /// Background graphics context
+    gctx:       xproto::Gcontext,
+    /// Hold all current masks
+    masks:      Masks,
 }
 
 impl XConnection {
     /// Create a new [`XConnection`]
     pub(crate) fn new(conn: RustConnection, screen_num: usize, config: &Config) -> Result<Self> {
+        log::trace!("creating a new `XConnection`");
+        log::trace!("{:#?}", config);
+
         Self::check_extensions(&conn).context("failed to query extensions")?;
 
-
         // Allocate a graphics context
-        // let gctx = conn.generate_id().context("failed to generate an `ID`")?;
-        // conn.create_gc(gctx, root, &CreateGCAux::new())?
-        //     .check()
-        //     .context("create graphics context")?;
+        let gctx = conn.generate_id().context("failed to generate an `ID`")?;
+        conn.create_gc(gctx, root, &CreateGCAux::new())?
+            .check()
+            .context("create graphics context")?;
 
         // conn.grab_server()
         //     .context("failed to grab server")?
@@ -356,10 +368,12 @@ impl XConnection {
         let aux = Aux::new(conn, screen_num).context("failed to create `Aux`")?;
 
         let mut xconn = Self {
-            win_types:  WindowType::to_hashmap(aux.get_atoms()),
+            win_types: WindowType::to_hashmap(aux.get_atoms()),
             win_states: WindowState::to_hashmap(aux.get_atoms()),
-            conn:       aux,
-            // gctx,
+            conn: aux,
+            config: config.global.clone(),
+            masks: Masks::new(),
+            gctx,
         };
 
         // xconn.init(config)?;
@@ -483,7 +497,7 @@ impl XConnection {
     /// Initalize a new [`Window`]
     pub(crate) fn init_window(&self, window: Window, focus_follows_mouse: bool) -> Result<()> {
         log::debug!(
-            "initializing Window({}); focus_follows_mouse: {}",
+            "initializing Window({:#0x}); focus_follows_mouse: {}",
             window,
             focus_follows_mouse
         );
@@ -491,10 +505,10 @@ impl XConnection {
         self.aux()
             .change_window_attributes(
                 window,
-                &ChangeWindowAttributesAux::default().event_mask(WINDOW_EVENT_MASK),
+                &ChangeWindowAttributesAux::default().event_mask(self.masks.window_event_mask),
             )
             .context(format!(
-                "failed to `change_window_attributes` Window({:?})",
+                "failed to `change_window_attributes` Window({:#0x})",
                 window
             ))?
             .check()
@@ -506,13 +520,13 @@ impl XConnection {
     /// Initalize a window frame
     pub(crate) fn init_frame(&self, window: Window, focus_follows_mouse: bool) -> Result<()> {
         log::debug!(
-            "initializing Frame({}); focus_follows_mouse: {}",
+            "initializing Frame({:#0x}); focus_follows_mouse: {}",
             window,
             focus_follows_mouse
         );
 
-        let evmask = FRAME_EVENT_MASK
-            | t!(focus_follows_mouse?(EventMask::ENTER_WINDOW): (EventMask::NO_EVENT));
+        let evmask = self.masks.frame_event_mask
+            | (t!(focus_follows_mouse?(EventMask::ENTER_WINDOW): (EventMask::NO_EVENT)));
 
         self.aux()
             .change_window_attributes(
@@ -520,8 +534,26 @@ impl XConnection {
                 &ChangeWindowAttributesAux::default().event_mask(evmask),
             )
             .context(format!(
-                "failed to `change_window_attributes` Window({}) with mask({:?})",
+                "failed to `change_window_attributes` Window({:#0x}) with mask({:?})",
                 window, evmask
+            ))?
+            .check()
+            .context("failed to check changing window attributes")?;
+
+        Ok(())
+    }
+
+    /// Initialize an unmanaged [`Window`]
+    pub(crate) fn init_unmanaged(&self, window: Window) -> Result<()> {
+        log::debug!("initializing unmanaged Window({:#0x})", window);
+        self.aux()
+            .change_window_attributes(
+                window,
+                &ChangeWindowAttributesAux::default().event_mask(EventMask::STRUCTURE_NOTIFY),
+            )
+            .context(format!(
+                "failed to `change_window_attributes` Window({:#0x})",
+                window
             ))?
             .check()
             .context("failed to check changing window attributes")?;
@@ -667,11 +699,24 @@ impl XConnection {
     /// Make an attempt to become the window manager
     pub(crate) fn become_wm(&self) -> Result<()> {
         log::debug!("attempting to become the window manager");
-        self.change_window_attributes(
-            &ChangeWindowAttributesAux::new()
-                .event_mask(EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY),
-        )
-        .context("another window manager is currently running")?;
+
+        if let Err(ReplyError::X11Error(err)) = self
+            .aux()
+            .change_window_attributes(
+                self.root(),
+                &ChangeWindowAttributesAux::new()
+                    .event_mask(EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY),
+            )
+            .context("another window manager is currently running")?
+            .check()
+        {
+            if err.error_kind == ErrorKind::Access {
+                return Err(anyhow!("another window manager is currently running"));
+            }
+
+            return Err(anyhow!("failed to setup LWM window manager"));
+        }
+
         Ok(())
     }
 
@@ -680,7 +725,7 @@ impl XConnection {
         let data = [atom, x11rb::CURRENT_TIME, 0, 0, 0];
         let event = ClientMessageEvent::new(32, window, type_, data);
         log::debug!(
-            "sending a `ClientMessage` for Window({}); atom: {}, type: {}",
+            "sending a `ClientMessage` for Window({:#0x}); atom: {}, type: {}",
             window,
             atom,
             type_
@@ -689,12 +734,12 @@ impl XConnection {
         self.aux()
             .send_event(false, window, EventMask::NO_EVENT, &event)
             .context(format!(
-                "failed to send event. Window: {}, Type: {}",
+                "failed to send event. Window: {:#0x}, Type: {}",
                 event.window, event.type_
             ))?
             .check()
             .context(format!(
-                "failed to check sending event. Window: {}, Type: {}",
+                "failed to check sending event. Window: {:#0x}, Type: {}",
                 event.window, event.type_
             ))?;
 
@@ -711,7 +756,7 @@ impl XConnection {
 
     /// Set an [`Atom`]s value (cardinal)
     pub(crate) fn set_atom(&self, window: Window, atom: Atom, value: &[u32]) -> Result<()> {
-        log::debug!("changing `{}` in Window({})", atom, window);
+        log::debug!("changing `{}` in Window({:#0x})", atom, window);
         self.aux()
             .change_property32(
                 PropMode::REPLACE,
@@ -720,7 +765,10 @@ impl XConnection {
                 self.atoms().CARDINAL,
                 value,
             )
-            .context(format!("failed to set `{}` in Window({})", atom, window))?
+            .context(format!(
+                "failed to set `{}` in Window({:#0x})",
+                atom, window
+            ))?
             .check()
             .context(format!("failed to check setting `{}`", atom));
 
@@ -732,7 +780,7 @@ impl XConnection {
     /// Check whether the window supports any `WM_PROTOCOLS`
     pub(crate) fn window_supports_protocols(&self, window: Window, protocols: &[Atom]) -> bool {
         log::debug!(
-            "checking if Window({}) supports protocols {:?}",
+            "checking if Window({:#0x}) supports protocols {:?}",
             window,
             protocols
         );
@@ -757,7 +805,7 @@ impl XConnection {
     /// Check whether the window is in any of the given [`states`](Atom)
     pub(crate) fn window_is_any_of_state(&self, window: Window, states: &[Atom]) -> bool {
         log::debug!(
-            "checking if Window({}) supports states {:?}",
+            "checking if Window({:#0x}) supports states {:?}",
             window,
             states
         );
@@ -781,7 +829,11 @@ impl XConnection {
 
     /// Check whether the window is any of the given [`types`](Atom)
     pub(crate) fn window_is_any_of_types(&self, window: Window, types: &[Atom]) -> bool {
-        log::debug!("checking if Window({}) supports types {:?}", window, types);
+        log::debug!(
+            "checking if Window({:#0x}) supports types {:?}",
+            window,
+            types
+        );
         self.aux()
             .get_property(
                 false,
@@ -802,7 +854,7 @@ impl XConnection {
 
     /// Should the window manager manage this [`Window`]?
     pub(crate) fn must_manage_window(&self, window: Window) -> bool {
-        log::debug!("checking if Window({}) should be managed", window);
+        log::debug!("checking if Window({:#0x}) should be managed", window);
         let do_not_manage = self
             .aux()
             .get_window_attributes(window)
@@ -826,7 +878,7 @@ impl XConnection {
 
     /// Check if the given [`Window`] is mappable
     pub(crate) fn window_is_mappable(&self, window: Window) -> bool {
-        log::debug!("checking if Window({}) is mappable", window);
+        log::debug!("checking if Window({:#0x}) is mappable", window);
         self.aux()
             .get_window_attributes(window)
             .map_or(false, |cookie| {
@@ -850,25 +902,28 @@ impl XConnection {
 
     /// Test whether the window is in fullscreen using
     pub(crate) fn window_is_fullscreen(&self, window: Window) -> bool {
-        log::debug!("checking `_NET_WM_STATE_FULLSCREEN` for Window({})", window);
+        log::debug!(
+            "checking `_NET_WM_STATE_FULLSCREEN` for Window({:#0x})",
+            window
+        );
         self.window_is_any_of_state(window, &[self.atoms()._NET_WM_STATE_FULLSCREEN])
     }
 
     /// Test whether the window should be above other windows
     pub(crate) fn window_is_above(&self, window: Window) -> bool {
-        log::debug!("checking `_NET_WM_STATE_ABOVE` for Window({})", window);
+        log::debug!("checking `_NET_WM_STATE_ABOVE` for Window({:#0x})", window);
         self.window_is_any_of_state(window, &[self.atoms()._NET_WM_STATE_ABOVE])
     }
 
     /// Test whether the window should be below other windows
     pub(crate) fn window_is_below(&self, window: Window) -> bool {
-        log::debug!("checking `_NET_WM_STATE_BELOW` for Window({})", window);
+        log::debug!("checking `_NET_WM_STATE_BELOW` for Window({:#0x})", window);
         self.window_is_any_of_state(window, &[self.atoms()._NET_WM_STATE_BELOW])
     }
 
     /// Test whether the window's position should remain fixed
     pub(crate) fn window_is_sticky(&self, window: Window) -> bool {
-        log::debug!("checking `_NET_WM_STATE_STICKY` for Window({})", window);
+        log::debug!("checking `_NET_WM_STATE_STICKY` for Window({:#0x})", window);
         let has_sticky_state =
             self.window_is_any_of_state(window, &[self.atoms()._NET_WM_STATE_STICKY]);
 
@@ -967,7 +1022,7 @@ impl XConnection {
 
     /// Get the desktop the given [`Window`] is in
     pub(crate) fn get_window_desktop(&self, window: Window) -> Option<usize> {
-        log::debug!("getting `_NET_WM_DESKTOP` for Window({})", window);
+        log::debug!("getting `_NET_WM_DESKTOP` for Window({:#0x})", window);
         self.aux()
             .get_property(
                 false,
@@ -996,7 +1051,7 @@ impl XConnection {
 
     /// Create a window matching the given [`Rectangle`]
     pub(crate) fn create_frame(&self, rect: Rectangle) -> Result<Window> {
-        log::debug!("creating a frame");
+        log::debug!("creating a frame: Rectangle({})", rect);
         let wid = self.generate_id().context("failed to generate an ID")?;
         let aux = CreateWindowAux::new()
             .backing_store(Some(xproto::BackingStore::ALWAYS))
@@ -1016,9 +1071,9 @@ impl XConnection {
                 0,
                 &aux,
             )
-            .context(format!("failed to create window: {}", wid))?
+            .context(format!("failed to create Window({:#0x})", wid))?
             .check()
-            .context(format!("failed check creating window: {}", wid))?;
+            .context(format!("failed check creating Window({:#0x})", wid))?;
 
         self.flush();
 
@@ -1029,8 +1084,8 @@ impl XConnection {
     ///
     /// This is a recreation of the `meta_window`
     pub(crate) fn create_handle(&self) -> Result<Window> {
-        log::debug!("creating a `meta_window`");
         let wid = self.generate_id().context("failed to generate an ID")?;
+        log::debug!("creating a `meta_window`: {:#0x}", wid);
         let aux = CreateWindowAux::new().override_redirect(1);
 
         self.aux()
@@ -1047,9 +1102,9 @@ impl XConnection {
                 0,
                 &aux,
             )
-            .context(format!("failed to create window: {}", wid))?
+            .context(format!("failed to create Window({:#0x})", wid))?
             .check()
-            .context(format!("failed check creating window: {}", wid))?;
+            .context(format!("failed check creating Window({:#0x})", wid))?;
 
         self.flush();
 
@@ -1058,12 +1113,18 @@ impl XConnection {
 
     /// Focus the given [`Window`]
     pub(crate) fn focus_window(&self, window: Window) -> Result<()> {
-        log::debug!("focusing Window({})", window);
+        log::debug!("focusing Window({:#0x})", window);
         self.aux()
             .set_input_focus(InputFocus::PARENT, window, x11rb::CURRENT_TIME)
-            .context(format!("failed to `set_input_focus`: {}", window))?
+            .context(format!(
+                "failed to `set_input_focus` for Window({:#0x})",
+                window
+            ))?
             .check()
-            .context(format!("failed to check `set_input_focus`: {}", window))?;
+            .context(format!(
+                "failed to check `set_input_focus` for Window({:#0x})",
+                window
+            ))?;
 
         self.aux()
             .change_property32(
@@ -1085,7 +1146,9 @@ impl XConnection {
         log::debug!("unfocusing `meta_window`");
         self.aux()
             .set_input_focus(InputFocus::PARENT, self.meta_window(), x11rb::CURRENT_TIME)
-            .context("failed to unfocus `meta_window`")?;
+            .context("failed to unfocus `meta_window`")?
+            .check()
+            .context("failed to check unfocusing `meta_window`")?;
 
         self.delete_property(self.atoms()._NET_ACTIVE_WINDOW)?;
 
@@ -1098,7 +1161,9 @@ impl XConnection {
         log::debug!("setting `input_focus`");
         self.aux()
             .set_input_focus(InputFocus::POINTER_ROOT, self.root(), x11rb::CURRENT_TIME)
-            .context("failed to clear `input_focus`")?;
+            .context("failed to clear `input_focus`")?
+            .check()
+            .context("failed to check setting `input_focus`")?;
 
         Ok(())
     }
@@ -1113,10 +1178,105 @@ impl XConnection {
         Ok(())
     }
 
+    /// Modify the [`Window`]'s `border_width`
+    ///
+    /// Doesn't have to be from the user's configuration
+    pub(crate) fn set_window_border_width(&self, window: Window, width: u32) -> Result<()> {
+        self.aux()
+            .configure_window(window, &ConfigureWindowAux::default().border_width(width))
+            .context(format!(
+                "failed to set Window({:#0x}) border width to {}",
+                window, width
+            ))?
+            .check()
+            .context(format!("failed to check setting border width to {}", width))?;
+
+        Ok(())
+    }
+
+    /// Change the color of the [`Window`]'s border
+    pub(crate) fn set_window_border_color(&self, window: Window, color: u32) -> Result<()> {
+        self.aux()
+            .change_window_attributes(
+                window,
+                &ChangeWindowAttributesAux::default().border_pixel(color),
+            )
+            .context(format!(
+                "failed to set Window({:#0x}) border color to {}",
+                window, color
+            ))?
+            .check()
+            .context(format!("failed to check setting border color to {}", color))?;
+
+        Ok(())
+    }
+
+    /// Change the color of the [`Window`]'s background
+    pub(crate) fn set_window_background_color(&self, window: Window, color: u32) -> Result<()> {
+        if let Ok(r) = self.get_window_geometry(window) {
+            self.aux()
+                .change_gc(self.gctx, &ChangeGCAux::new().foreground(color))
+                .context(format!(
+                    "failed to change Window({:#0x}) foreground color",
+                    window
+                ))?
+                .check()
+                .context("failed to check changing foreground color")?;
+
+            self.aux()
+                .poly_fill_rectangle(window, self.gctx, &[xproto::Rectangle {
+                    x:      0,
+                    y:      0,
+                    width:  r.dimension.width as u16,
+                    height: r.dimension.height as u16,
+                }])
+                .context(format!(
+                    "failed to fill rectangle in Window({:#0x})",
+                    window
+                ))?
+                .check()
+                .context("failed to check filling rectangle")?;
+        }
+
+        Ok(())
+    }
+
+    /// Modify the [`Window`]'s offset to the frame
+    pub(crate) fn update_window_offset(&self, window: Window, frame: Window) -> Result<()> {
+        if let Ok(frame) = self.get_window_geometry(frame) {
+            if let Ok(geom) = self.get_window_geometry(window) {
+                let event = xproto::ConfigureNotifyEvent {
+                    response_type: xproto::CONFIGURE_NOTIFY_EVENT,
+                    sequence: 0,
+                    event: window,
+                    window,
+                    above_sibling: x11rb::NONE,
+                    x: (frame.point.x + geom.point.x) as i16,
+                    y: (frame.point.y + geom.point.y) as i16,
+                    width: geom.dimension.width as u16,
+                    height: geom.dimension.height as u16,
+                    border_width: 0,
+                    override_redirect: false,
+                };
+
+                self.aux()
+                    .send_event(false, window, EventMask::STRUCTURE_NOTIFY, &event)
+                    .context(format!("failed to update Window({:#0x})'s offset", window))?
+                    .check()
+                    .context(format!(
+                        "failed to check updating Window({:#0x})'s offset",
+                        window
+                    ))?;
+            }
+        }
+
+        Ok(())
+    }
+
     // TODO: Finish
     /// Add a new window that should be managed by the WM
     pub(crate) fn manage_window(&mut self, window: Window, geom: &GetGeometryReply) -> Result<()> {
-        log::debug!("managing Window({})", window);
+        log::debug!("managing Window({:#0x})", window);
         let screen = &self.aux().setup().roots[self.screen()];
         // assert!(self.find_window_by_id(win).is_none());
 
@@ -1172,13 +1332,25 @@ impl XConnection {
 
     /// Resize a [`Window`]
     pub(crate) fn resize_window(&self, window: Window, dim: Dimension) -> Result<()> {
-        log::debug!("resizing Window({})", window);
+        log::debug!("resizing Window({:#0x}): ({})", window, dim);
 
         self.aux()
             .configure_window(window, &dim.to_aux())
-            .context(format!("failed to resize Window({})", window))?
+            .context(format!("failed to resize Window({:#0x})", window))?
             .check()
-            .context(format!("failed to check resizing Window({})", window))?;
+            .context(format!("failed to check resizing Window({:#0x})", window))?;
+
+        Ok(())
+    }
+
+    /// Place a [`Window`] on the screen
+    pub(crate) fn place_window(&self, window: Window, rect: Rectangle) -> Result<()> {
+        log::debug!("placing Window({:#0x}): {}", window, rect);
+        self.aux()
+            .configure_window(window, &rect.to_aux(self.config.border_width))
+            .context(format!("failed to resize Window({:#0x})", window))?
+            .check()
+            .context(format!("failed to check resizing Window({:#0x})", window))?;
 
         Ok(())
     }
@@ -1259,6 +1431,7 @@ impl XConnection {
     // fn set_window_below(&self, window: Window, on: bool) {}
 
     /// Toggle full screen mode
+    #[allow(clippy::unused_self)]
     pub(crate) fn toggle_fullscreen(&self, window: Window, on: bool) {
         // use self.aux.screen_width
         todo!()
@@ -1272,7 +1445,7 @@ impl XConnection {
 
     /// Get a states of all [`Window`]s
     pub(crate) fn get_window_states(&self, window: Window) -> Vec<WindowState> {
-        log::debug!("querying for Window({})'s state", window);
+        log::debug!("querying for Window({:#0x})'s state", window);
         let mut wm_states = vec![];
 
         // for state in reply
@@ -1311,7 +1484,7 @@ impl XConnection {
 
     /// Get the first state of the given [`Window`]
     pub(crate) fn get_window_preferred_state(&self, window: Window) -> Option<WindowState> {
-        log::debug!("getting Window({})'s preffered state", window);
+        log::debug!("getting Window({:#0x})'s preffered state", window);
         self.get_window_states(window).get(0).copied()
     }
 
@@ -1388,7 +1561,7 @@ impl XConnection {
         state: WindowState,
         on: bool,
     ) -> Result<()> {
-        log::debug!("setting Window({})'s state: {:?}", window, state);
+        log::debug!("setting Window({:#0x})'s state: {:?}", window, state);
         self.set_window_state_atom(
             window,
             match state {
@@ -1418,7 +1591,7 @@ impl XConnection {
         window: Window,
         state: IcccmWindowState,
     ) -> Result<()> {
-        log::debug!("setting ICCCM Window({})'s state: {:?}", window, state);
+        log::debug!("setting ICCCM Window({:#0x})'s state: {:?}", window, state);
         self.aux()
             .change_property32(
                 PropMode::REPLACE,
@@ -1436,7 +1609,10 @@ impl XConnection {
 
     /// Get an `icccm` window's `WM_STATE` property
     pub(crate) fn get_icccm_window_class(&self, window: Window) -> String {
-        log::debug!("requesting ICCCM Window({})'s `WM_STATE` property", window);
+        log::debug!(
+            "requesting ICCCM Window({:#0x})'s `WM_STATE` property",
+            window
+        );
         WmClass::get(self.aux(), window).map_or(String::from(MISSING_VALUE), |cookie| {
             cookie.reply().map_or(String::from(MISSING_VALUE), |reply| {
                 str::from_utf8(reply.class()).map_or(String::from(MISSING_VALUE), String::from)
@@ -1446,7 +1622,7 @@ impl XConnection {
 
     /// Get an `icccm` window's `WM_NAME` property
     pub(crate) fn get_icccm_window_name(&self, window: Window) -> String {
-        log::debug!("requesting Window({})'s `WM_NAME` property", window);
+        log::debug!("requesting Window({:#0x})'s `WM_NAME` property", window);
         self.aux()
             .get_property(
                 false,
@@ -1466,7 +1642,10 @@ impl XConnection {
 
     /// Get an `icccm` window's name contained in the `WM_CLASS` property
     pub(crate) fn get_icccm_window_instance(&self, window: Window) -> String {
-        log::debug!("requesting ICCCM Window({})'s `WM_CLASS` property", window);
+        log::debug!(
+            "requesting ICCCM Window({:#0x})'s `WM_CLASS` property",
+            window
+        );
         WmClass::get(self.aux(), window).map_or(String::from(MISSING_VALUE), |cookie| {
             cookie.reply().map_or(String::from(MISSING_VALUE), |reply| {
                 str::from_utf8(reply.instance()).map_or(String::from(MISSING_VALUE), String::from)
@@ -1557,7 +1736,7 @@ impl XConnection {
 
     /// Get the first type of the given [`Window`]
     pub(crate) fn get_window_preferred_type(&self, window: Window) -> WindowType {
-        log::debug!("getting Window({})'s preffered type", window);
+        log::debug!("getting Window({:#0x})'s preffered type", window);
         self.get_window_types(window)
             .get(0)
             .map_or(WindowType::Normal, |&type_| type_)
@@ -1627,7 +1806,7 @@ impl XConnection {
 
     /// Move position of the pointer to a [`Point`] in the given [`Window`]
     pub(crate) fn warp_pointer_win(&self, window: Window, pnt: Point) -> Result<()> {
-        log::debug!("warping pointer in Window({})", window);
+        log::debug!("warping pointer in Window({:#0x})", window);
         self.aux()
             .warp_pointer(x11rb::NONE, window, 0, 0, 0, 0, pnt.x as i16, pnt.y as i16)
             .context("failed to `warp_pointer`")?
@@ -1659,30 +1838,30 @@ impl XConnection {
     }
 
     /// Confine the pointer to the given [`Window`]
-    pub(crate) fn confine_pointer(&mut self, window: Window) {
-        // if self.confined_to.is_none() {
-        //     if let Ok(_) = self.conn.grab_pointer(
-        //         false,
-        //         self.screen.root,
-        //         u32::from(EventMask::POINTER_MOTION |
-        // EventMask::BUTTON_RELEASE) as u16,         xproto::GrabMode::
-        // ASYNC,         xproto::GrabMode::ASYNC,
-        //         self.screen.root,
-        //         x11rb::NONE,
-        //         x11rb::CURRENT_TIME,
-        //     ) {
-        //         drop(self.conn.grab_keyboard(
-        //             false,
-        //             self.screen.root,
-        //             x11rb::CURRENT_TIME,
-        //             xproto::GrabMode::ASYNC,
-        //             xproto::GrabMode::ASYNC,
-        //         ));
-        //
-        //         self.confined_to = Some(window);
-        //     }
-        // }
-    }
+    // pub(crate) fn confine_pointer(&mut self, window: Window) {
+    // if self.confined_to.is_none() {
+    //     if let Ok(_) = self.conn.grab_pointer(
+    //         false,
+    //         self.screen.root,
+    //         u32::from(EventMask::POINTER_MOTION |
+    // EventMask::BUTTON_RELEASE) as u16,         GrabMode::
+    // ASYNC,         GrabMode::ASYNC,
+    //         self.screen.root,
+    //         x11rb::NONE,
+    //         x11rb::CURRENT_TIME,
+    //     ) {
+    //         drop(self.conn.grab_keyboard(
+    //             false,
+    //             self.screen.root,
+    //             x11rb::CURRENT_TIME,
+    //             GrabMode::ASYNC,
+    //             GrabMode::ASYNC,
+    //         ));
+    //
+    //         self.confined_to = Some(window);
+    //     }
+    // }
+    // }
 
     // ]]] === Pointer ===
 
@@ -1778,7 +1957,7 @@ impl XConnection {
 
     /// Make specified [`Window`] its own parent
     pub(crate) fn unparent_window(&self, window: Window, pnt: Point) -> Result<()> {
-        log::debug!("attempting to unparent Window({})", window);
+        log::debug!("attempting to unparent Window({:#0x})", window);
         self.aux()
             .reparent_window(window, self.root(), pnt.x as i16, pnt.y as i16)
             .context(format!("failed to unparent window {}", window))?
@@ -1790,7 +1969,7 @@ impl XConnection {
 
     /// Destroy the given [`Window`] and all of its sub-windows
     pub(crate) fn destroy_window(&self, window: Window) -> Result<()> {
-        log::debug!("attempting to destroy Window({})", window);
+        log::debug!("attempting to destroy Window({:#0x})", window);
         self.aux()
             .destroy_window(window)
             .context(format!("failed to destroy window {}", window))?
@@ -1806,10 +1985,10 @@ impl XConnection {
             .send_protocol_client_message(window, self.atoms().WM_DELETE_WINDOW)
             .is_ok()
         {
-            log::debug!("closed Window({})", window);
+            log::debug!("closed Window({:#0x})", window);
             self.flush()
         } else {
-            log::debug!("failed to close Window({})", window);
+            log::debug!("failed to close Window({:#0x})", window);
             false
         }
     }
@@ -1821,12 +2000,41 @@ impl XConnection {
         if self.window_supports_protocols(window, protocols) {
             self.close_window(window)
         } else if self.aux().kill_client(window).is_ok() {
-            log::debug!("killed client for Window({})", window);
+            log::debug!("killed client for Window({:#0x})", window);
             self.flush()
         } else {
-            log::debug!("failed to kill Window({})", window);
+            log::debug!("failed to kill Window({:#0x})", window);
             false
         }
+    }
+
+    /// Cleanup atoms associated with a given [`Window`]
+    pub(crate) fn cleanup_window(&self, window: Window) -> Result<()> {
+        let err = |atom, window| -> String {
+            format!(
+                "failed to delete property `{}` for Window({:#0x})",
+                atom, window
+            )
+        };
+        let check_err = |atom, window| -> String {
+            format!(
+                "failed to check deleting property `{}` for Window({:#0x})",
+                atom, window
+            )
+        };
+
+        self.aux()
+            .delete_property(window, self.atoms()._NET_WM_STATE)
+            .context(err("_NET_WM_STATE", window))?
+            .check()
+            .context(check_err("_NET_WM_STATE", window))?;
+        self.aux()
+            .delete_property(window, self.atoms()._NET_WM_DESKTOP)
+            .context(err("_NET_WM_DESKTOP", window))?
+            .check()
+            .context(check_err("_NET_WM_DESKTOP", window))?;
+
+        Ok(())
     }
 
     // ]]] === Base Wrappers ===
@@ -1956,28 +2164,66 @@ impl XConnection {
                 false,       // owner events
                 self.root(), // window
                 x11rb::CURRENT_TIME,
-                xproto::GrabMode::ASYNC,
-                xproto::GrabMode::ASYNC,
+                GrabMode::ASYNC,
+                GrabMode::ASYNC,
             )
             .context("failed to grab keyboard")?
             .reply()
             .context("failed to get reply after grabbing keyboard")?;
 
         if reply.status == xproto::GrabStatus::ALREADY_GRABBED {
-            log::info!("the keyboard is already grabbed");
+            return Err(anyhow!("the keyboard is already grabbed"));
         } else if reply.status != xproto::GrabStatus::SUCCESS {
-            lwm_fatal!("failed to grab keyboard. Replied with unsuccessful status");
+            return Err(anyhow!(
+                "failed to grab keyboard. Replied with unsuccessful status"
+            ));
         }
 
         Ok(())
     }
 
     /// Ungrab/release the keyboard
-    pub(crate) fn ungrab_keyboard(&self) {
+    pub(crate) fn ungrab_keyboard(&self) -> Result<()> {
         log::debug!("attempting to ungrab control of the entire keyboard");
-        if let Err(e) = self.aux().ungrab_keyboard(x11rb::CURRENT_TIME) {
-            lwm_fatal!("failed to ungrab keyboard: {}", e);
-        }
+        self.aux()
+            .ungrab_keyboard(x11rb::CURRENT_TIME)
+            .context("failed to ungrab keyboard")?
+            .check()
+            .context("failed to check ungrabbing keyboard")?;
+
+        Ok(())
+    }
+
+    /// Regrab all buttons in the given [`Window`]
+    pub(crate) fn regrab_buttons(&self, window: Window) -> Result<()> {
+        self.aux()
+            .grab_button(
+                true,
+                window,
+                u32::from(self.masks.regrab_event_mask) as u16,
+                GrabMode::ASYNC,
+                GrabMode::ASYNC,
+                x11rb::NONE,
+                x11rb::NONE,
+                ButtonIndex::ANY,
+                ModMask::ANY,
+            )
+            .context("failed to regrab buttons")?
+            .check()
+            .context("failed to check regrabbing button")?;
+
+        Ok(())
+    }
+
+    /// Ungrab all currently grabbed buttons
+    pub(crate) fn ungrab_buttons(&self, window: Window) -> Result<()> {
+        self.aux()
+            .ungrab_button(ButtonIndex::ANY, window, ModMask::ANY)
+            .context("failed to ungrab all buttons")?
+            .check()
+            .context("failed to check ungrabbing all buttons")?;
+
+        Ok(())
     }
 
     /// Ungrab the pointer
@@ -1988,8 +2234,8 @@ impl XConnection {
             false,
             window,
             u32::from(EventMask::POINTER_MOTION | EventMask::BUTTON_RELEASE) as u16,
-            xproto::GrabMode::ASYNC,
-            xproto::GrabMode::ASYNC,
+            GrabMode::ASYNC,
+            GrabMode::ASYNC,
             t!(confine.is_some() ? confine.unwrap() : x11rb::NONE),
             x11rb::NONE,
             x11rb::CURRENT_TIME,
@@ -1999,7 +2245,12 @@ impl XConnection {
 
     /// Grab the server (wrapper for errors)
     pub(crate) fn grab_server(&self) -> Result<()> {
-        self.aux().grab_server().context("failed to grab server")?;
+        log::debug!("grabbing the server");
+        self.aux()
+            .grab_server()
+            .context("failed to grab server")?
+            .check()
+            .context("failed to check grabbing server")?;
         Ok(())
     }
 
@@ -2030,10 +2281,10 @@ impl XConnection {
 
         self.aux()
             .configure_window(window, &aux)
-            .context(format!("failed to stack Window({}) {:?}", window, mode))?
+            .context(format!("failed to stack Window({:#0x}) {:?}", window, mode))?
             .check()
             .context(format!(
-                "failed to check stacking Window({}) {:?}",
+                "failed to check stacking Window({:#0x}) {:?}",
                 window, mode
             ))?;
 
@@ -2041,12 +2292,13 @@ impl XConnection {
     }
 
     /// Stack given [`Window`] above other windows. Bring a sibling along
+    #[allow(clippy::unwrap_used)]
     pub(crate) fn stack_window_above(&self, window: Window, sibling: Option<Window>) -> Result<()> {
         log::debug!(
-            "stacking Window({}){} above",
+            "stacking Window({:#0x}){} above",
             window,
             t!(sibling.is_some()
-                ? format!(" with Sibling({})", sibling.unwrap())
+                ? format!(" with Sibling({:#0x})", sibling.unwrap())
                 : String::from(""))
         );
         let mut aux = ConfigureWindowAux::default().stack_mode(xproto::StackMode::ABOVE);
@@ -2057,20 +2309,24 @@ impl XConnection {
 
         self.aux()
             .configure_window(window, &aux)
-            .context(format!("failed to stack Window({}) below", window))?
+            .context(format!("failed to stack Window({:#0x}) below", window))?
             .check()
-            .context(format!("failed to check stacking Window({}) below", window))?;
+            .context(format!(
+                "failed to check stacking Window({:#0x}) below",
+                window
+            ))?;
 
         Ok(())
     }
 
     /// Stack given [`Window`] below other windows. Bring a sibling along
+    #[allow(clippy::unwrap_used)]
     pub(crate) fn stack_window_below(&self, window: Window, sibling: Option<Window>) -> Result<()> {
         log::debug!(
-            "stacking Window({}){} below",
+            "stacking Window({:#0x}){} below",
             window,
             t!(sibling.is_some()
-                ? format!(" with Sibling({})", sibling.unwrap())
+                ? format!(" with Sibling({:#0x})", sibling.unwrap())
                 : String::from(""))
         );
         let mut aux = ConfigureWindowAux::default().stack_mode(xproto::StackMode::BELOW);
@@ -2081,9 +2337,29 @@ impl XConnection {
 
         self.aux()
             .configure_window(window, &aux)
-            .context(format!("failed to stack Window({}) below", window))?
+            .context(format!("failed to stack Window({:#0x}) below", window))?
             .check()
-            .context(format!("failed to check stacking Window({}) below", window))?;
+            .context(format!(
+                "failed to check stacking Window({:#0x}) below",
+                window
+            ))?;
+
+        Ok(())
+    }
+
+    /// Put [`Window`] into the client's `save_set`
+    pub(crate) fn insert_window_in_save_set(&self, window: Window) -> Result<()> {
+        self.aux()
+            .change_save_set(xproto::SetMode::INSERT, window)
+            .context(format!(
+                "failed to `change_save_set` for Window({:#0x})",
+                window
+            ))?
+            .check()
+            .context(format!(
+                "failed to check `change_save_set` for Window({:#0x})",
+                window
+            ))?;
 
         Ok(())
     }
@@ -2177,6 +2453,7 @@ impl XConnection {
         Ok(owner.owner != x11rb::NONE)
     }
 
+    // TODO: Use or delete
     /// Scan for already existing windows and manage them
     pub(crate) fn scan_windows(&mut self) -> Result<()> {
         let tree = self.query_tree(self.root())?;
@@ -2261,7 +2538,7 @@ impl XConnection {
     /// Cleanup everything having to do with the window manager
     ///
     /// Errors do not need to be checked here
-    pub(crate) fn cleanup(&self) {
+    pub(crate) fn cleanup(self) {
         log::debug!("ungrabbing all keys");
         drop(
             self.aux()
@@ -2270,7 +2547,7 @@ impl XConnection {
 
         drop(self.destroy_window(self.meta_window()));
 
-        &[
+        for atom in [
             self.atoms()._NET_ACTIVE_WINDOW,
             self.atoms()._NET_SUPPORTING_WM_CHECK,
             self.atoms()._NET_WM_NAME,
@@ -2278,19 +2555,20 @@ impl XConnection {
             self.atoms()._NET_SUPPORTED,
             self.atoms()._NET_WM_PID,
             self.atoms()._NET_CLIENT_LIST,
-        ]
-        .iter()
-        .for_each(|atom| {
+        ] {
             log::debug!("deleting property: {}", atom);
-            drop(self.delete_property(*atom));
-        });
+            drop(self.delete_property(atom));
+        }
 
+        // TODO: Close connection properly
         // NOTE: Is stdout still connected here?
         log::debug!("dropping the connection. Goodbye");
-        drop(self.aux());
+        // let conn = Arc::try_unwrap(self.conn.dpy).expect("failed to unwrap
+        // connection"); drop(conn);
     }
 
     /// Release the pointer from being confined to a [`Window`]
+    #[allow(clippy::unused_self)]
     pub(crate) fn release_pointer(&mut self) {
         // if self.confined_to.is_some() {
         //     drop(self.conn.ungrab_pointer(x11rb::CURRENT_TIME));
@@ -2352,7 +2630,7 @@ impl XConnection {
     pub(crate) fn get_window_parent(&self, window: Window) -> Result<u32> {
         let tree = self.query_tree(window)?;
         let id = tree.parent;
-        log::debug!("getting Window({})'s parent: {}", window, id);
+        log::debug!("getting Window({:#0x})'s parent: {}", window, id);
         Ok(id)
     }
 
@@ -2426,7 +2704,7 @@ impl XConnection {
 
     /// Get the [`Window`]'s geometry, returning a [`Rectangle`]
     pub(crate) fn get_window_geometry(&self, window: Window) -> Result<Rectangle> {
-        log::debug!("getting geometry for Window({})", window);
+        log::debug!("getting geometry for Window({:#0x})", window);
         // translate_coordinates must be used to get the actual values
         let geom = self.get_geometry(window)?;
 
@@ -2442,7 +2720,7 @@ impl XConnection {
 
         let (x, y, w, h) = (trans.dst_x, trans.dst_y, geom.width, geom.height);
         log::debug!(
-            "Window({}): Geomtry: x: {}, y: {}, w: {}, h: {}",
+            "Window({:#0x}): Geomtry: x: {}, y: {}, w: {}, h: {}",
             window,
             x,
             y,
@@ -2455,7 +2733,7 @@ impl XConnection {
 
     /// Get the window's [`Hints`]
     pub(crate) fn get_icccm_window_hints(&self, window: Window) -> Option<Hints> {
-        log::debug!("getting `Hints` for Window({})", window);
+        log::debug!("getting `Hints` for Window({:#0x})", window);
         let hints = properties::WmHints::get(self.aux(), window)
             .ok()?
             .reply()
@@ -2636,7 +2914,7 @@ impl XConnection {
     /// Set the desktop of the given [`Window`]
     pub(crate) fn set_window_desktop(&self, window: Window, idx: usize) -> Result<()> {
         log::debug!(
-            "setting `_NET_WM_DESKTOP` for Window({}) to desktop {}",
+            "setting `_NET_WM_DESKTOP` for Window({:#0x}) to desktop {}",
             window,
             idx
         );
@@ -2647,7 +2925,7 @@ impl XConnection {
 
     /// Set the [`Window`]s [`Hints`]
     pub(crate) fn set_icccm_window_hints(&self, window: Window, hints: Hints) -> Result<()> {
-        log::debug!("setting `Hints` for window {}", window);
+        log::debug!("setting `Hints` for Window({:#0x})", window);
         let wm_hints = properties::WmHints {
             input:         hints.input,
             initial_state: hints
@@ -2663,7 +2941,10 @@ impl XConnection {
 
         wm_hints
             .set(self.aux(), window)
-            .context(format!("failed to set window {} for `WmHints`", window))?
+            .context(format!(
+                "failed to set Window({:#0x}) for `WmHints`",
+                window
+            ))?
             .check()
             .context(format!(
                 "failed to check setting window {} for `WmHints`",
@@ -2675,7 +2956,7 @@ impl XConnection {
 
     /// Set the [`Window`]'s [`Extents`] (padding)
     pub(crate) fn set_window_frame_extents(&self, window: Window, extents: Extents) -> Result<()> {
-        log::debug!("setting `Extents` for Window({})", window);
+        log::debug!("setting `Extents` for Window({:#0x})", window);
         let frame_extents = vec![extents.left, extents.right, extents.top, extents.bottom];
 
         self.set_atom(window, self.atoms()._NET_FRAME_EXTENTS, &frame_extents[..])?;
