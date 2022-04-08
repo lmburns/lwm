@@ -98,6 +98,7 @@
     clippy::unwrap_in_result,
     clippy::used_underscore_binding,
     clippy::single_char_lifetime_names,
+    clippy::declare_interior_mutable_const,
 
     // Remove later
     clippy::print_stdout,

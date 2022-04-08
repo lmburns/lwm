@@ -5,17 +5,20 @@ use crate::{
     core::{
         Atom,
         Button,
+        MotionRecorder,
+        Pid,
         Window,
         WindowClass,
         WindowMap,
         WindowState,
         WindowType,
         Xid,
+        META_WINDOW_IC,
         MISSING_VALUE,
         TITLEBAR_HEIGHT,
     },
     error::Error,
-    geometry::{Dimension, Extents, Point, Ratio, Rectangle},
+    geometry::{Dimension, Extents, Point, Ratio, Rectangle, Strut},
     lwm_fatal,
     monitor::client::IcccmProps,
     x::{
@@ -284,40 +287,49 @@ atom_manager! {
 /// Hold all current masks
 struct Masks {
     /// Mask for root window events
-    root_event_mask:   EventMask,
+    bspwm_root_event_mask: EventMask,
+    /// Mask for client events
+    client_event_mask:     EventMask,
+    /// Mask for root window events
+    root_event_mask:       EventMask,
     /// Mask for normal window events
-    window_event_mask: EventMask,
+    window_event_mask:     EventMask,
     /// Mask for mouse events
-    frame_event_mask:  EventMask,
+    frame_event_mask:      EventMask,
     /// Mask for mouse events
-    mouse_event_mask:  EventMask,
+    mouse_event_mask:      EventMask,
     /// Mask for regrabbing events
-    regrab_event_mask: EventMask,
+    regrab_event_mask:     EventMask,
 }
 
 impl Masks {
     /// Create a new [`Masks`]
     fn new() -> Self {
         Self {
-            root_event_mask:   EventMask::PROPERTY_CHANGE
+            bspwm_root_event_mask: EventMask::SUBSTRUCTURE_REDIRECT
+                | EventMask::SUBSTRUCTURE_NOTIFY
+                | EventMask::STRUCTURE_NOTIFY
+                | EventMask::BUTTON_PRESS,
+            client_event_mask:     EventMask::PROPERTY_CHANGE | EventMask::FOCUS_CHANGE,
+            root_event_mask:       EventMask::PROPERTY_CHANGE
                 | EventMask::SUBSTRUCTURE_REDIRECT
                 | EventMask::STRUCTURE_NOTIFY
                 | EventMask::BUTTON_PRESS
                 | EventMask::POINTER_MOTION
                 | EventMask::FOCUS_CHANGE,
-            window_event_mask: EventMask::PROPERTY_CHANGE
+            window_event_mask:     EventMask::PROPERTY_CHANGE
                 | EventMask::STRUCTURE_NOTIFY
                 | EventMask::FOCUS_CHANGE,
-            frame_event_mask:  EventMask::STRUCTURE_NOTIFY
+            frame_event_mask:      EventMask::STRUCTURE_NOTIFY
                 | EventMask::SUBSTRUCTURE_REDIRECT
                 | EventMask::SUBSTRUCTURE_NOTIFY
                 | EventMask::BUTTON_PRESS
                 | EventMask::BUTTON_RELEASE
                 | EventMask::POINTER_MOTION,
-            mouse_event_mask:  EventMask::BUTTON_PRESS
+            mouse_event_mask:      EventMask::BUTTON_PRESS
                 | EventMask::BUTTON_RELEASE
                 | EventMask::BUTTON_MOTION,
-            regrab_event_mask: EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE,
+            regrab_event_mask:     EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE,
         }
     }
 }
@@ -333,17 +345,19 @@ impl Masks {
 /// The main connection to the X-Server
 pub(crate) struct XConnection {
     /// Connections to the X-Server
-    conn:       Aux,
+    conn:            Aux,
     /// A hash mapping an [`Atom`] to a [`WindowType`]
-    win_types:  HashMap<Atom, WindowType>,
+    win_types:       HashMap<Atom, WindowType>,
     /// A hash mapping an [`Atom`] to a [`WindowState`]
-    win_states: HashMap<Atom, WindowState>,
+    win_states:      HashMap<Atom, WindowState>,
     /// Configuration of the user
-    config:     GlobalSettings,
+    config:          GlobalSettings,
     /// Background graphics context
-    gctx:       xproto::Gcontext,
+    gctx:            xproto::Gcontext,
     /// Hold all current masks
-    masks:      Masks,
+    masks:           Masks,
+    /// TODO: Define
+    motion_recorder: MotionRecorder,
 }
 
 impl XConnection {
@@ -353,6 +367,7 @@ impl XConnection {
         log::trace!("{:#?}", config);
 
         Self::check_extensions(&conn).context("failed to query extensions")?;
+        let root = conn.setup().roots[screen_num].root;
 
         // Allocate a graphics context
         let gctx = conn.generate_id().context("failed to generate an `ID`")?;
@@ -365,6 +380,7 @@ impl XConnection {
         //     .check()
         //     .context("failed to check after grabbing server")?;
 
+        let motion_id = conn.generate_id().context("failed to generate an `ID`")?;
         let aux = Aux::new(conn, screen_num).context("failed to create `Aux`")?;
 
         let mut xconn = Self {
@@ -374,11 +390,11 @@ impl XConnection {
             config: config.global.clone(),
             masks: Masks::new(),
             gctx,
+            motion_recorder: MotionRecorder::new(motion_id),
         };
 
-        // xconn.init(config)?;
-
-        xconn.become_wm()?;
+        xconn.init()?;
+        // xconn.become_wm()?;
 
         // xconn
         //     .conn
@@ -389,22 +405,6 @@ impl XConnection {
 
         Ok(xconn)
     }
-
-    // /// Initialize the window manager
-    // fn init(&self, config: &Config) -> Result<()> {
-    //     self.init_window()?;
-    //
-    //     let desktop_names = config.global.desktops.clone().unwrap_or_else(|| {
-    //         (1_i32..=5_i32)
-    //             .into_iter()
-    //             .map(|d| format!("{d}"))
-    //             .collect_vec()
-    //     });
-    //
-    //     self.init_properties(WM_NAME!(), &desktop_names[..]);
-    //
-    //     Ok(())
-    // }
 
     // ========================== TESTING ==========================
     // ========================== TESTING ==========================
@@ -469,9 +469,59 @@ impl XConnection {
 
     // ======================== Initialize ======================== [[[
 
-    // TODO: Use/delete
+    /// Initialize the window manager
+    fn init(&self) -> Result<()> {
+        self.init_metawindow()?;
+        self.aux()
+            .configure_window(
+                self.meta_window(),
+                &ConfigureWindowAux::default().stack_mode(xproto::StackMode::BELOW),
+            )?
+            .check()
+            .context("failed to configure meta window")?;
+
+        self.aux()
+            .randr_select_input(
+                self.meta_window(),
+                randr::NotifyMask::OUTPUT_CHANGE
+                    | randr::NotifyMask::CRTC_CHANGE
+                    | randr::NotifyMask::SCREEN_CHANGE,
+            )
+            .context("failed to select randr input")?
+            .check()
+            .context("failed to check randr::select_input")?;
+
+        self.init_cursor();
+
+        let aux = CreateWindowAux::new()
+            .event_mask(EventMask::SUBSTRUCTURE_NOTIFY | EventMask::POINTER_MOTION);
+
+        self.aux()
+            .create_window(
+                x11rb::COPY_DEPTH_FROM_PARENT, // depth
+                self.motion_recorder.id,       // wid
+                self.root(),                   // parent
+                0,                             // x
+                0,                             // y
+                1,                             // width
+                1,                             // height
+                0,                             // border_width
+                XWindowClass::INPUT_OUTPUT,    // class
+                0,                             // visual
+                &aux,
+            )
+            .context(format!(
+                "failed to create motion recorder Window({:#0x})",
+                self.motion_recorder.id
+            ))?
+            .check()
+            .context("failed to check creating motion recorder window")?;
+
+        Ok(())
+    }
+
     /// Initialize the meta window
-    pub(crate) fn init_window1(&self) -> Result<()> {
+    pub(crate) fn init_metawindow(&self) -> Result<()> {
         log::debug!("creating `meta_window`");
         self.aux().create_window(
             x11rb::COPY_DEPTH_FROM_PARENT,
@@ -487,11 +537,26 @@ impl XConnection {
             &xproto::CreateWindowAux::default().override_redirect(1),
         )?;
 
-        self.grab_server()?;
+        // self.grab_server()?;
         self.map_window(self.meta_window());
-        self.ungrab_server()?;
+        // self.ungrab_server()?;
 
         Ok(())
+    }
+
+    /// Initializes the database and set the cursor
+    fn init_cursor(&self) {
+        log::debug!("initializing the Cursor to `left_ptr`");
+        if let Ok(ref db) = Database::new_from_default(self.aux()).context("failed to get database") {
+            CursorHandle::new(self.aux(), self.screen(), db).map(|cookie| {
+                cookie.reply().map(|inner| {
+                    let aux = ChangeWindowAttributesAux::default()
+                        .cursor(inner.load_cursor(self.aux(), "left_ptr").ok());
+
+                    self.change_window_attributes(&aux);
+                })
+            });
+        }
     }
 
     /// Initalize a new [`Window`]
@@ -561,26 +626,11 @@ impl XConnection {
         Ok(())
     }
 
-    /// Initializes the database and set the cursor
-    fn init_cursor(&self) {
-        log::debug!("initializing the Cursor to `left_ptr`");
-        if let Ok(ref db) = Database::new_from_default(self.aux()).context("failed to get database") {
-            CursorHandle::new(self.aux(), self.screen(), db).map(|cookie| {
-                cookie.reply().map(|inner| {
-                    let aux = ChangeWindowAttributesAux::default()
-                        .cursor(inner.load_cursor(self.aux(), "left_ptr").ok());
-
-                    self.change_window_attributes(&aux);
-                })
-            });
-        }
-    }
-
     /// Initializes the wanted window manager properties
     fn init_properties<S: AsRef<str>>(&self, wm_name: &str, desktop_names: &[S]) -> Result<()> {
         log::debug!("initializing window manager properties");
         // Specifies instance and class names, separated by null
-        let wm_class = format!("{w}\0{w}\0", w = wm_name);
+        let wm_class = META_WINDOW_IC;
 
         self.aux()
             .change_property8(
@@ -803,7 +853,7 @@ impl XConnection {
     }
 
     /// Check whether the window is in any of the given [`states`](Atom)
-    pub(crate) fn window_is_any_of_state(&self, window: Window, states: &[Atom]) -> bool {
+    pub(crate) fn window_is_any_of_states(&self, window: Window, states: &[Atom]) -> bool {
         log::debug!(
             "checking if Window({:#0x}) supports states {:?}",
             window,
@@ -876,6 +926,35 @@ impl XConnection {
         !self.window_is_any_of_types(window, to_exclude)
     }
 
+    /// Determine if a window must be freed based on given its state, type, or
+    /// geometry
+    pub(crate) fn must_free_window(&self, window: Window) -> bool {
+        log::debug!("checking if Window({:#0x}) should be freed", window);
+        if self.get_window_desktop(window) == Some(0xFFFF_FFFF)
+            || self.window_is_any_of_states(window, &[self.atoms()._NET_WM_STATE_MODAL])
+            || self.window_is_any_of_types(window, &[
+                self.atoms()._NET_WM_WINDOW_TYPE_DIALOG,
+                self.atoms()._NET_WM_WINDOW_TYPE_UTILITY,
+                self.atoms()._NET_WM_WINDOW_TYPE_TOOLBAR,
+                self.atoms()._NET_WM_WINDOW_TYPE_SPLASH,
+            ])
+        {
+            return true;
+        }
+
+        self.get_window_geometry(window).map_or(false, |geometry| {
+            self.get_icccm_window_size_hints(window, None, &None)
+                .1
+                .map_or(false, |sh| {
+                    match (sh.min_width, sh.min_height, sh.max_width, sh.max_height) {
+                        (Some(miw), Some(mih), Some(maw), Some(mah)) =>
+                            maw > 0 && mah > 0 && maw == miw && mah == mih,
+                        _ => false,
+                    }
+                })
+        })
+    }
+
     /// Check if the given [`Window`] is mappable
     pub(crate) fn window_is_mappable(&self, window: Window) -> bool {
         log::debug!("checking if Window({:#0x}) is mappable", window);
@@ -894,7 +973,7 @@ impl XConnection {
                     );
 
                     reply.class != xproto::WindowClass::INPUT_ONLY
-                        && !self.window_is_any_of_state(window, &[self.atoms()._NET_WM_STATE_HIDDEN])
+                        && !self.window_is_any_of_states(window, &[self.atoms()._NET_WM_STATE_HIDDEN])
                         && matches!(initial_state, properties::WmHintsState::Normal)
                 })
             })
@@ -906,33 +985,27 @@ impl XConnection {
             "checking `_NET_WM_STATE_FULLSCREEN` for Window({:#0x})",
             window
         );
-        self.window_is_any_of_state(window, &[self.atoms()._NET_WM_STATE_FULLSCREEN])
+        self.window_is_any_of_states(window, &[self.atoms()._NET_WM_STATE_FULLSCREEN])
     }
 
     /// Test whether the window should be above other windows
     pub(crate) fn window_is_above(&self, window: Window) -> bool {
         log::debug!("checking `_NET_WM_STATE_ABOVE` for Window({:#0x})", window);
-        self.window_is_any_of_state(window, &[self.atoms()._NET_WM_STATE_ABOVE])
+        self.window_is_any_of_states(window, &[self.atoms()._NET_WM_STATE_ABOVE])
     }
 
     /// Test whether the window should be below other windows
     pub(crate) fn window_is_below(&self, window: Window) -> bool {
         log::debug!("checking `_NET_WM_STATE_BELOW` for Window({:#0x})", window);
-        self.window_is_any_of_state(window, &[self.atoms()._NET_WM_STATE_BELOW])
+        self.window_is_any_of_states(window, &[self.atoms()._NET_WM_STATE_BELOW])
     }
 
     /// Test whether the window's position should remain fixed
     pub(crate) fn window_is_sticky(&self, window: Window) -> bool {
         log::debug!("checking `_NET_WM_STATE_STICKY` for Window({:#0x})", window);
-        let has_sticky_state =
-            self.window_is_any_of_state(window, &[self.atoms()._NET_WM_STATE_STICKY]);
 
-        if has_sticky_state {
-            return true;
-        }
-
-        self.get_window_desktop(window)
-            .map_or(false, |desktop| desktop == 0xFFFF_FFFF)
+        self.window_is_any_of_states(window, &[self.atoms()._NET_WM_STATE_STICKY])
+            || self.get_window_desktop(window) == Some(0xFFFF_FFFF)
     }
 
     // ]]] ===== Testing Values =====
@@ -992,6 +1065,7 @@ impl XConnection {
 
     /// Get the given [`Window`]s class name as a `String`
     pub(crate) fn get_window_class(&self, window: Window) -> Result<String> {
+        log::debug!("getting `WM_CLASS` for Window({:#0x})", window);
         let reply = self
             .aux()
             .get_property(
@@ -1016,7 +1090,7 @@ impl XConnection {
 
         // Extract the second null terminated string
         let class = str::from_utf8(&iter.collect::<Vec<_>>())?.to_owned();
-        log::debug!("WindowClass: id: {}, class: {}", window, class);
+        log::debug!("Window({:#0x}) is class {}", window, class);
         Ok(class)
     }
 
@@ -1157,8 +1231,8 @@ impl XConnection {
 
     // TODO:
     /// Set the current input focus
-    pub(crate) fn set_input_focus(&self) -> Result<()> {
-        log::debug!("setting `input_focus`");
+    pub(crate) fn clear_input_focus(&self) -> Result<()> {
+        log::debug!("clearing `input_focus`");
         self.aux()
             .set_input_focus(InputFocus::POINTER_ROOT, self.root(), x11rb::CURRENT_TIME)
             .context("failed to clear `input_focus`")?
@@ -1168,20 +1242,11 @@ impl XConnection {
         Ok(())
     }
 
-    /// Unfocus everything
-    pub(crate) fn clear_input_focus(&self) -> Result<()> {
-        log::debug!("clearing `input_focus`");
-        self.aux()
-            .set_input_focus(InputFocus::POINTER_ROOT, self.root(), x11rb::CURRENT_TIME)
-            .context("failed to clear `input_focus`")?;
-
-        Ok(())
-    }
-
     /// Modify the [`Window`]'s `border_width`
     ///
     /// Doesn't have to be from the user's configuration
     pub(crate) fn set_window_border_width(&self, window: Window, width: u32) -> Result<()> {
+        log::debug!("setting Window({:#0x}) border width {}", window, width);
         self.aux()
             .configure_window(window, &ConfigureWindowAux::default().border_width(width))
             .context(format!(
@@ -1196,6 +1261,7 @@ impl XConnection {
 
     /// Change the color of the [`Window`]'s border
     pub(crate) fn set_window_border_color(&self, window: Window, color: u32) -> Result<()> {
+        log::debug!("setting Window({:#0x}) border color {}", window, color);
         self.aux()
             .change_window_attributes(
                 window,
@@ -1213,6 +1279,7 @@ impl XConnection {
 
     /// Change the color of the [`Window`]'s background
     pub(crate) fn set_window_background_color(&self, window: Window, color: u32) -> Result<()> {
+        log::debug!("setting Window({:#0x}) bg color {}", window, color);
         if let Ok(r) = self.get_window_geometry(window) {
             self.aux()
                 .change_gc(self.gctx, &ChangeGCAux::new().foreground(color))
@@ -1243,6 +1310,7 @@ impl XConnection {
 
     /// Modify the [`Window`]'s offset to the frame
     pub(crate) fn update_window_offset(&self, window: Window, frame: Window) -> Result<()> {
+        log::debug!("updating Window({:#0x}) offset", window);
         if let Ok(frame) = self.get_window_geometry(frame) {
             if let Ok(geom) = self.get_window_geometry(window) {
                 let event = xproto::ConfigureNotifyEvent {
@@ -1333,7 +1401,6 @@ impl XConnection {
     /// Resize a [`Window`]
     pub(crate) fn resize_window(&self, window: Window, dim: Dimension) -> Result<()> {
         log::debug!("resizing Window({:#0x}): ({})", window, dim);
-
         self.aux()
             .configure_window(window, &dim.to_aux())
             .context(format!("failed to resize Window({:#0x})", window))?
@@ -1484,7 +1551,7 @@ impl XConnection {
 
     /// Get the first state of the given [`Window`]
     pub(crate) fn get_window_preferred_state(&self, window: Window) -> Option<WindowState> {
-        log::debug!("getting Window({:#0x})'s preffered state", window);
+        log::debug!("getting Window({:#0x})'s preferred state", window);
         self.get_window_states(window).get(0).copied()
     }
 
@@ -1497,7 +1564,7 @@ impl XConnection {
     ) -> Result<()> {
         if on {
             log::debug!("setting `_NET_WM_STATE`: {}", state_atom);
-            if self.window_is_any_of_state(window, &[state_atom]) {
+            if self.window_is_any_of_states(window, &[state_atom]) {
                 return Ok(());
             }
 
@@ -2090,6 +2157,9 @@ impl XConnection {
     }
 
     /// Return the information about the focused [`Window`](xproto::Window)
+    ///
+    /// # Errors
+    /// Will cause an error if requesting `GetInputFocusReply` fails
     pub(crate) fn get_input_focus(&self) -> Result<GetInputFocusReply> {
         log::debug!("requesting a `GetInputFocusReply` reply");
         self.aux()
@@ -2546,6 +2616,7 @@ impl XConnection {
         );
 
         drop(self.destroy_window(self.meta_window()));
+        drop(self.clear_input_focus());
 
         for atom in [
             self.atoms()._NET_ACTIVE_WINDOW,
@@ -2560,11 +2631,9 @@ impl XConnection {
             drop(self.delete_property(atom));
         }
 
-        // TODO: Close connection properly
         // NOTE: Is stdout still connected here?
         log::debug!("dropping the connection. Goodbye");
-        // let conn = Arc::try_unwrap(self.conn.dpy).expect("failed to unwrap
-        // connection"); drop(conn);
+        drop(self.conn);
     }
 
     /// Release the pointer from being confined to a [`Window`]
@@ -2634,8 +2703,80 @@ impl XConnection {
         Ok(id)
     }
 
+    /// Get a vector of the [`Window`]'s [`Strut`]s from `_NET_WM_STRUT`
+    pub(crate) fn get_window_strut(&self, window: Window) -> Option<Vec<Option<Strut>>> {
+        if let Some(strut) = self.get_window_strut_partial(window) {
+            return Some(strut);
+        }
+
+        self.aux()
+            .get_property(
+                false,
+                window,
+                self.atoms()._NET_WM_STRUT,
+                self.atoms().CARDINAL,
+                0,
+                u32::MAX,
+            )
+            .ok()?
+            .reply()
+            .ok()
+            .and_then(|strut| {
+                let widths: Vec<u32> = strut.value32()?.collect();
+                if widths.is_empty() {
+                    return None;
+                }
+
+                let mut struts = Vec::with_capacity(4);
+                for (i, &width) in widths.iter().enumerate() {
+                    if i == 4 {
+                        break;
+                    }
+
+                    struts.push((width != 0).then(|| Strut { window, width }));
+                }
+
+                Some(struts)
+            })
+    }
+
+    /// Get the `_NET_WM_STRUT_PARTIAL` atom
+    pub(crate) fn get_window_strut_partial(&self, window: Window) -> Option<Vec<Option<Strut>>> {
+        log::debug!("getting `_NET_WM_STRUT_PARTIAL` for Window({:#0x})", window);
+        self.aux()
+            .get_property(
+                false,
+                window,
+                self.atoms()._NET_WM_STRUT_PARTIAL,
+                self.atoms().CARDINAL,
+                0,
+                u32::MAX,
+            )
+            .ok()?
+            .reply()
+            .ok()
+            .and_then(|strut_partial| {
+                let widths: Vec<u32> = strut_partial.value32()?.collect();
+                if widths.is_empty() {
+                    return None;
+                }
+
+                let mut struts = Vec::with_capacity(1);
+                for (i, &width) in widths.iter().enumerate() {
+                    if i == 4 {
+                        break;
+                    }
+
+                    struts.push((width != 0).then(|| Strut { window, width }));
+                }
+
+                Some(struts)
+            })
+    }
+
+    // TODO: Use or delete
     /// Get the window manager's process ID use `_NET_WM_PID`
-    pub(crate) fn get_window_pid(&self, window: Window) -> Result<u32> {
+    pub(crate) fn get_window_pid1(&self, window: Window) -> Result<u32> {
         log::debug!("requesting property `_NET_WM_PID`");
         Ok(self
             .aux()
@@ -2653,6 +2794,32 @@ impl XConnection {
             .value32()
             .and_then(|mut i| i.next())
             .ok_or_else(|| Error::InvalidProperty(String::from("_NET_WM_PID")))?)
+    }
+
+    /// Get the window manager's process ID use `_NET_WM_PID`
+    pub(crate) fn get_window_pid(&self, window: Window) -> Option<Pid> {
+        use protocol::res;
+
+        let id_spec = res::ClientIdSpec {
+            client: window,
+            mask:   u8::from(res::ClientIdMask::LOCAL_CLIENT_PID) as u32,
+        };
+
+        res::query_client_ids(self.aux(), &[id_spec])
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .and_then(|reply| {
+                for i in reply.ids {
+                    if (i.spec.mask & (u8::from(res::ClientIdMask::LOCAL_CLIENT_PID)) as u32) != 0
+                        && !i.value.is_empty()
+                        && i.value[0] != 0
+                    {
+                        return Some(i.value[0]);
+                    }
+                }
+
+                None
+            })
     }
 
     // /// Get the list of connected [`Monitor`]s
@@ -2739,16 +2906,11 @@ impl XConnection {
             .reply()
             .ok()?;
 
-        let urgent = hints.urgent;
-        let input = hints.input;
-        let group = hints.window_group;
-        let initial_state = hints.initial_state.map(IcccmWindowState::from);
-
         Some(Hints {
-            urgent,
-            input,
-            initial_state,
-            group,
+            urgent:        hints.urgent,
+            input:         hints.input,
+            group:         hints.window_group,
+            initial_state: hints.initial_state.map(IcccmWindowState::from),
         })
     }
 
@@ -2875,6 +3037,74 @@ impl XConnection {
         });
 
         (*current_size_hints == size_hints, size_hints)
+    }
+
+    /// Get the focused window
+    ///
+    /// Same as [`get_input_focus`](#method.get_input_focus), minus errors
+    pub(crate) fn get_focused_window(&self) -> Window {
+        self.aux().get_input_focus().map_or(self.root(), |cookie| {
+            cookie.reply().map_or(self.root(), |reply| reply.focus)
+        })
+    }
+
+    /// Get the `WM_TRANSIENT_FOR` atom
+    pub(crate) fn get_icccm_window_transient_for(&self, window: Window) -> Option<Window> {
+        self.aux()
+            .get_property(
+                false,
+                window,
+                self.atoms().WM_TRANSIENT_FOR,
+                self.atoms().WINDOW,
+                0,
+                u32::MAX,
+            )
+            .ok()?
+            .reply()
+            .ok()
+            .and_then(|transient_for| {
+                let transient_for: Vec<u32> = transient_for.value32()?.collect();
+
+                if transient_for.is_empty() {
+                    log::debug!("`WM_TRANSIENT_FOR` is empty");
+                    None
+                } else {
+                    // TODO: Possibly just return transient_for[0]
+                    if transient_for[0] == 0 {
+                        log::debug!("`WM_TRANSIENT_FOR` is 0");
+                        None
+                    } else {
+                        log::debug!("got `WM_TRANSIENT_FOR` for Window({:#0x})", window);
+                        Some(transient_for[0])
+                    }
+                }
+            })
+    }
+
+    /// Get the [`Window`]'s `WM_CLIENT_LEADER` atom
+    /// TODO: Use or delete
+    pub(crate) fn get_icccm_window_client_leader(&self, window: Window) -> Option<Window> {
+        self.aux()
+            .get_property(
+                false,
+                window,
+                self.atoms().WM_CLIENT_LEADER,
+                self.atoms().WINDOW,
+                0,
+                u32::MAX,
+            )
+            .ok()?
+            .reply()
+            .ok()
+            .and_then(|client_leader| {
+                let client_leader: Vec<u32> = client_leader.value32()?.collect();
+
+                if client_leader.is_empty() {
+                    None
+                } else {
+                    Some(client_leader[0])
+                }
+            })
     }
 
     // ]]] === Retrieve ===

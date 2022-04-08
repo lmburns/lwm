@@ -102,6 +102,10 @@ pub(crate) struct GlobalSettings {
     #[serde(alias = "focused-border-color")]
     pub(crate) focused_border_color: String,
 
+    /// Color of the border of an urgent window
+    #[serde(alias = "urgent-border-color")]
+    pub(crate) urgent_border_color: String,
+
     /// Color of the area when preselection takes place
     #[serde(alias = "presel-feedback-color")]
     pub(crate) presel_feedback_color: String,
@@ -479,6 +483,7 @@ impl Default for GlobalSettings {
             normal_border_color:   String::from("#4C566A"),
             active_border_color:   String::from("#1E1E1E"),
             focused_border_color:  String::from("#A98698"),
+            urgent_border_color:   String::from("#EF1D55"),
             presel_feedback_color: String::from("#4C96A8"),
 
             padding:                     Padding::new(0, 0, 0, 0),
@@ -541,6 +546,7 @@ impl Clone for GlobalSettings {
             normal_border_color: self.normal_border_color.clone(),
             active_border_color: self.active_border_color.clone(),
             focused_border_color: self.focused_border_color.clone(),
+            urgent_border_color: self.urgent_border_color.clone(),
             presel_feedback_color: self.presel_feedback_color.clone(),
             padding: self.padding,
             monocle_padding: self.monocle_padding,

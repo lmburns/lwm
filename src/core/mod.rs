@@ -2,12 +2,15 @@
 
 #![allow(clippy::missing_docs_in_private_items)]
 
+pub(crate) mod decoration;
+
 use crate::{
-    geometry::{Dimension, Point, Rectangle, Ratio},
-    x::{input::ModMask, xconnection::Atoms},
+    geometry::{Dimension, Point, Ratio, Rectangle},
     tree::Node,
+    x::{input::ModMask, xconnection::Atoms},
 };
 use anyhow::{anyhow, Result};
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::{
     cmp,
@@ -58,6 +61,13 @@ pub(crate) const DRAG_BUTTON: Button = 1;
 macro_rules! WM_NAME (
     () => { "lwm" };
 );
+
+/// Window manager's class name
+pub(crate) const WM_CLASS_NAME: &str = "Lwm";
+/// Meta window's class name
+pub(crate) const META_WINDOW_IC: Lazy<String> = Lazy::new(|| format!("wm\0{}", WM_CLASS_NAME));
+/// Root window's class name
+pub(crate) const ROOT_WINDOW_IC: Lazy<String> = Lazy::new(|| format!("root\0{}", WM_CLASS_NAME));
 
 // ============================== XWindow =============================
 // ====================================================================
@@ -263,6 +273,7 @@ impl fmt::Display for WindowType {
 
 // ========================== WindowState ==========================
 
+// NOTE: bspwm Equivalent to `wm_flags_t`
 /// State of the current window.
 ///
 /// More information can be found in the [X11 documentation][1]
@@ -659,4 +670,24 @@ pub(crate) enum StackMode {
     // TopIf,
     // BottomIf,
     // Opposite,
+}
+
+// ========================== Motion Recorder ==========================
+
+#[derive(Debug, Copy, Clone, PartialOrd, Ord, PartialEq, Eq)]
+pub(crate) struct MotionRecorder {
+    pub(crate) id:       Xid,
+    pub(crate) sequence: u16,
+    pub(crate) enabled:  bool,
+}
+
+impl MotionRecorder {
+    /// Create a new [`MotionRecorder`]
+    pub(crate) const fn new(id: Xid) -> Self {
+        Self {
+            id,
+            sequence: 0,
+            enabled: false,
+        }
+    }
 }

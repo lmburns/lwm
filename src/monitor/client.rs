@@ -129,6 +129,24 @@ impl PartialEq for Client {
 
 use attr_rs::{attr_accessor, attr_reader, attr_writer};
 
+// typedef struct {
+//     char class_name[MAXLEN];
+//     char instance_name[MAXLEN];
+//     char name[MAXLEN];
+//     unsigned int border_width;
+//     bool urgent;
+//     bool shown;
+//     client_state_t state;
+//     client_state_t last_state;
+//     stack_layer_t layer;
+//     stack_layer_t last_layer;
+//     xcb_rectangle_t floating_rectangle;
+//     xcb_rectangle_t tiled_rectangle;
+//     xcb_size_hints_t size_hints;
+//     icccm_props_t icccm_props;
+//     wm_flags_t wm_flags;
+// } client_t;
+
 // Easier to read with multiple calls, or separate lines?
 
 /// Metadata about a X window.

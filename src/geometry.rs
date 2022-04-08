@@ -1,6 +1,6 @@
 //! Structures used to map areas on the screen
 
-use crate::core::{Corner, Direction, Tightness};
+use crate::core::{Corner, Direction, Tightness, Window};
 use serde::{Deserialize, Serialize};
 use std::{
     fmt,
@@ -29,6 +29,43 @@ impl Ratio {
     /// Create a new [`Ratio]
     pub(crate) const fn new(numerator: i32, denominator: i32) -> Self {
         Self { numerator, denominator }
+    }
+}
+
+// =============================== Strut ==============================
+// ====================================================================
+
+/// Reserve space at the borders of the desktop.
+/// This is useful for a taskbar or the docking area
+///
+/// See [this][1] for what a strut is
+/// See `xcb_ewmh_wm_strut_partial_t` for a struct of a full strut
+///
+/// [1]: https://specifications.freedesktop.org/wm-spec/1.3/ar01s05.html
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) struct Strut {
+    /// Window the strut is applied to
+    pub(crate) window: Window,
+    /// TODO: The width on each side of the strut
+    pub(crate) width:  u32,
+}
+
+impl Strut {
+    /// Create a new [`Strut`]
+    pub(crate) const fn new(window: Window, width: u32) -> Self {
+        Self { window, width }
+    }
+}
+
+impl PartialOrd for Strut {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Strut {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other.width.cmp(&self.width)
     }
 }
 
@@ -199,7 +236,7 @@ impl Dimension {
     }
 
     /// Convert to a [`ConfigureWindowAux`]
-    pub(crate) fn to_aux(&self) -> ConfigureWindowAux {
+    pub(crate) fn to_aux(self) -> ConfigureWindowAux {
         ConfigureWindowAux::new()
             .width(self.width)
             .height(self.height)
@@ -489,7 +526,7 @@ impl Rectangle {
 
     // TODO: Possibly add `border_pixel`
     /// Create a [`ConfigureWindowAux`] from a [`Rectangle`]
-    pub(crate) fn to_aux(&self, border_width: u32) -> ConfigureWindowAux {
+    pub(crate) fn to_aux(self, border_width: u32) -> ConfigureWindowAux {
         ConfigureWindowAux::new()
             .x(self.point.x)
             .y(self.point.y)
