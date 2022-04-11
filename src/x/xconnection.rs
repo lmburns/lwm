@@ -15,6 +15,7 @@ use crate::{
         Xid,
         META_WINDOW_IC,
         MISSING_VALUE,
+        MOTION_RECORDER_IC,
         TITLEBAR_HEIGHT,
     },
     error::Error,
@@ -393,7 +394,7 @@ impl XConnection {
             motion_recorder: MotionRecorder::new(motion_id),
         };
 
-        xconn.init()?;
+        // xconn.init()?;
         // xconn.become_wm()?;
 
         // xconn
@@ -470,7 +471,7 @@ impl XConnection {
     // ======================== Initialize ======================== [[[
 
     /// Initialize the window manager
-    fn init(&self) -> Result<()> {
+    fn init<S: AsRef<str>>(&self, wm_name: &str, desktop_names: &[S]) -> Result<()> {
         self.init_metawindow()?;
         self.aux()
             .configure_window(
@@ -516,6 +517,8 @@ impl XConnection {
             ))?
             .check()
             .context("failed to check creating motion recorder window")?;
+
+        self.init_properties(wm_name, desktop_names)?;
 
         Ok(())
     }
@@ -631,6 +634,7 @@ impl XConnection {
         log::debug!("initializing window manager properties");
         // Specifies instance and class names, separated by null
         let wm_class = META_WINDOW_IC;
+        let motion_recorder = MOTION_RECORDER_IC;
 
         self.aux()
             .change_property8(
@@ -645,17 +649,8 @@ impl XConnection {
             .context("failed to check replacing `_NET_WM_NAME`")?;
 
         // set_icccm_window_class
-        self.aux()
-            .change_property8(
-                PropMode::REPLACE,
-                self.meta_window(),
-                self.atoms().WM_CLASS,
-                self.atoms().UTF8_STRING,
-                wm_class.as_bytes(),
-            )
-            .context("failed to replace `WM_CLASS`")?
-            .check()
-            .context("failed to check replacing `WM_CLASS`")?;
+        self.set_icccm_window_class(self.meta_window(), &*wm_class)?;
+        self.set_icccm_window_class(self.motion_recorder.id, &*motion_recorder)?;
 
         self.aux()
             .change_property32(
@@ -1685,6 +1680,25 @@ impl XConnection {
                 str::from_utf8(reply.class()).map_or(String::from(MISSING_VALUE), String::from)
             })
         })
+    }
+
+    /// Set the ICCCM window `WM_CLASS` name
+    ///
+    /// Equivalent to `xcb_icccm_set_wm_class`
+    pub(crate) fn set_icccm_window_class(&self, window: Window, class_name: &str) -> Result<()> {
+        self.aux()
+            .change_property8(
+                PropMode::REPLACE,
+                window,
+                self.atoms().WM_CLASS,
+                self.atoms().UTF8_STRING,
+                class_name.as_bytes(),
+            )
+            .context("failed to replace `WM_CLASS`")?
+            .check()
+            .context("failed to check replacing `WM_CLASS`")?;
+
+        Ok(())
     }
 
     /// Get an `icccm` window's `WM_NAME` property

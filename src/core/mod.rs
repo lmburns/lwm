@@ -2,6 +2,7 @@
 
 #![allow(clippy::missing_docs_in_private_items)]
 
+pub(crate) mod change;
 pub(crate) mod decoration;
 
 use crate::{
@@ -68,6 +69,18 @@ pub(crate) const WM_CLASS_NAME: &str = "Lwm";
 pub(crate) const META_WINDOW_IC: Lazy<String> = Lazy::new(|| format!("wm\0{}", WM_CLASS_NAME));
 /// Root window's class name
 pub(crate) const ROOT_WINDOW_IC: Lazy<String> = Lazy::new(|| format!("root\0{}", WM_CLASS_NAME));
+
+/// Presel feedback instance name
+pub(crate) const PRESEL_FEEDBACK_I: &str = "presel_feedback";
+/// Presel feedack instanc class name
+pub(crate) const PRESEL_FEEDBACK_IC: Lazy<String> =
+    Lazy::new(|| format!("{}\0{}", PRESEL_FEEDBACK_I, WM_CLASS_NAME));
+
+/// Motion recorders instance name
+pub(crate) const MOTION_RECORDER_I: &str = "motion_recorder";
+/// Motion recorders instance class name
+pub(crate) const MOTION_RECORDER_IC: Lazy<String> =
+    Lazy::new(|| format!("{}\0{}", MOTION_RECORDER_I, WM_CLASS_NAME));
 
 // ============================== XWindow =============================
 // ====================================================================
